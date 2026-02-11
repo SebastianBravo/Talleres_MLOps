@@ -1,0 +1,23 @@
+# Ignore the .git directory and related files
+.git
+.gitignore
+
+# Ignore Python bytecode files and cache directories
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore virtual environment directories
+venv/
+env/
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore Docker-related files
+Dockerfile
+
+# Ignore any other files or directories that are not relevant to the project
+*.log
+models/
+data/

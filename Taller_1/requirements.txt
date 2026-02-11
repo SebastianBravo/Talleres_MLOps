@@ -4,3 +4,4 @@ palmerpenguins==0.1.6
 pandas==3.0.0
 pydantic==2.12.5
 scikit_learn==1.8.0
+uvicorn==0.40.0
