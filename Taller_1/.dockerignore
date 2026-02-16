@@ -21,3 +21,4 @@ Dockerfile
 *.log
 models/
 data/
+test_sample.csv

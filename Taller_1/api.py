@@ -1,7 +1,7 @@
 import os
 import joblib
 import pandas as pd
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Depends
 from pydantic import BaseModel, Field
 from typing import Annotated, Literal
 from sklearn.svm import SVC
@@ -84,8 +84,7 @@ def preprocess_input(penguin: Penguin):
 def predict_species(
     penguin: Annotated[
         Penguin,
-        Query(),
-        Field(description="A Penguin object containing the features of the penguin."),
+        Depends(),
     ],
 ):
     """
@@ -103,6 +102,52 @@ def predict_species(
 
     # Predict the species using the svm model
     predicted_species = svm_model.predict(x)[0]
+
+    # Map the predicted label to the actual species name
+    species_mapping = {0: "Adelie", 1: "Chinstrap", 2: "Gentoo"}
+    predicted_species_name = species_mapping.get(predicted_species, "Unknown")
+
+    return {"predicted_species": predicted_species_name}
+
+# Get method to predict the species of a penguin using a specified model
+@app.get("/predict_with_model")
+def predict_species_with_model(
+    penguin: Annotated[
+        Penguin,
+        Depends(),
+    ],
+    model: Annotated[
+        Literal["svm", "logistic_regression", "random_forest"],
+        Query(),
+        Field(description="The model to use for prediction. Must be one of 'svm', 'logistic_regression', 'random_forest'."),
+    ],
+):
+    """
+    Predict the species of a penguin based on its features using a specified model.
+
+    Args:
+        penguin (Penguin): A Penguin object containing the features of the penguin.
+        model (str): The model to use for prediction. Must be one of 'svm', 'logistic_regression', 'random_forest'.
+    Returns:
+        str: The predicted species of the penguin.
+    """
+    # Create a feature vector from the input penguin data
+    x = preprocess_input(penguin)
+
+    print(x)
+
+    # Select the model based on the input
+    if model == "svm":
+        selected_model = svm_model
+    elif model == "logistic_regression":
+        selected_model = logistic_regression_model
+    elif model == "random_forest":
+        selected_model = random_forest_model
+    else:
+        return {"error": "Invalid model specified."}
+
+    # Predict the species using the selected model
+    predicted_species = selected_model.predict(x)[0]
 
     # Map the predicted label to the actual species name
     species_mapping = {0: "Adelie", 1: "Chinstrap", 2: "Gentoo"}

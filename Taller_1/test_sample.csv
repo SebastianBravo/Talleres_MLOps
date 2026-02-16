@@ -1,0 +1,7 @@
+Sample of Original Data:
+species,island,bill_length_mm,bill_depth_mm,flipper_length_mm,body_mass_g,sex,year
+Chinstrap,Dream,46.0,18.9,195.0,4150.0,female,2007
+Adelie,Dream,40.9,18.9,184.0,3900.0,male,2007
+Gentoo,Biscoe,42.7,13.7,208.0,3950.0,female,2008
+Adelie,Dream,38.1,17.6,187.0,3425.0,female,2009
+Chinstrap,Dream,52.2,18.8,197.0,3450.0,male,2009
