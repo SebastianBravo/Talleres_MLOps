@@ -21,3 +21,9 @@ Dockerfile
 *.log
 models/
 data/
+test_sample.csv
+
+# Ignore readme and other documentation files
+README.md
+docs/
+img/

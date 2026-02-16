@@ -1,7 +1,13 @@
 FROM python:3.12
 
-COPY . .
+WORKDIR /app
 
+COPY requirements.txt .
 RUN pip3 install --no-cache-dir --upgrade -r requirements.txt
 
-CMD ["/entrypoint.sh"]
+COPY . .
+
+# Convert CRLF to LF and make entrypoint executable
+RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
+
+ENTRYPOINT ["./entrypoint.sh"]
