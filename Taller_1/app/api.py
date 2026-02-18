@@ -1,5 +1,6 @@
 import os
 import joblib
+import logging
 import pandas as pd
 from fastapi import FastAPI, Query, Depends
 from pydantic import BaseModel, Field
@@ -9,7 +10,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 
 # Load the trained models
-models_folder = "models"
+models_folder = os.path.join(os.path.dirname(__file__), "models")
 svm_model = joblib.load(os.path.join(models_folder, "svm.pkl"))
 logistic_regression_model = joblib.load(
     os.path.join(models_folder, "logistic_regression.pkl")
@@ -18,6 +19,12 @@ random_forest_model = joblib.load(os.path.join(models_folder, "random_forest.pkl
 
 app = FastAPI()
 
+# Configure logging to write to a file into folder logs
+logging.basicConfig(
+    filename=os.path.join(os.path.dirname(__file__), "logs/app.log"),
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 # Data model for a penguin
 class Penguin(BaseModel):
@@ -98,14 +105,16 @@ def predict_species(
     # Create a feature vector from the input penguin data
     x = preprocess_input(penguin)
 
-    print(x)
-
     # Predict the species using the svm model
     predicted_species = svm_model.predict(x)[0]
 
     # Map the predicted label to the actual species name
     species_mapping = {0: "Adelie", 1: "Chinstrap", 2: "Gentoo"}
     predicted_species_name = species_mapping.get(predicted_species, "Unknown")
+
+    # Log the request and the prediction
+    logging.info(f"Received prediction request for penguin: {penguin.dict()}")
+    logging.info(f"Predicted species: {predicted_species_name}")
 
     return {"predicted_species": predicted_species_name}
 
@@ -152,5 +161,9 @@ def predict_species_with_model(
     # Map the predicted label to the actual species name
     species_mapping = {0: "Adelie", 1: "Chinstrap", 2: "Gentoo"}
     predicted_species_name = species_mapping.get(predicted_species, "Unknown")
+
+    # Log the request and the prediction
+    logging.info(f"Received prediction request for penguin: {penguin.dict()} using model: {model}")
+    logging.info(f"Predicted species: {predicted_species_name}")
 
     return {"predicted_species": predicted_species_name}
