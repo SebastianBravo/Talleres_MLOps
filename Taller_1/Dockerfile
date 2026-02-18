@@ -1,11 +1,10 @@
 FROM python:3.12
 
 WORKDIR /app
+COPY . /app
 
-COPY requirements.txt .
 RUN pip3 install --no-cache-dir --upgrade -r requirements.txt
 
-COPY . .
 
 # Convert CRLF to LF and make entrypoint executable
 RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh

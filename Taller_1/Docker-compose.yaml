@@ -1,0 +1,7 @@
+version: '1'
+
+services:
+  ml_service:
+    build: .
+    ports:
+      - "8989:8989"
