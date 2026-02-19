@@ -6,6 +6,6 @@ services:
       - "8989:8989"
 
     volumes:
-      - "./app/logs/app.log:/app/logs/app.log"
+      - "./app/logs:/app/app/logs"
 
     command: ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8989"]
