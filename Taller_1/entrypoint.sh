@@ -1,5 +1,7 @@
 #!/bin/sh
 
+cd app
+
 # Run the training script to train the model and save it to disk
 python train.py
 
