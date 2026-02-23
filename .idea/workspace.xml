@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="0e6f557f-ab5d-4bdb-9c8e-b98514977d74" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/Taller_2/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/Dockerfile" beforeDir="false" afterPath="$PROJECT_DIR$/Taller_2/app/Dockerfile" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/api.py" beforeDir="false" afterPath="$PROJECT_DIR$/Taller_2/app/api.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/Taller_2/app/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/test_sample.csv" beforeDir="false" afterPath="$PROJECT_DIR$/Taller_2/app/test_sample.csv" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docker-compose.yml" beforeDir="false" afterPath="$PROJECT_DIR$/Taller_2/docker-compose.yml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/models/logistic_regression.pkl" beforeDir="false" afterPath="$PROJECT_DIR$/Taller_2/models/logistic_regression.pkl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/models/random_forest.pkl" beforeDir="false" afterPath="$PROJECT_DIR$/Taller_2/models/random_forest.pkl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/models/svm.pkl" beforeDir="false" afterPath="$PROJECT_DIR$/Taller_2/models/svm.pkl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/models/svm_v1.pkl" beforeDir="false" afterPath="$PROJECT_DIR$/Taller_2/models/svm_v1.pkl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/train/Dockerfile" beforeDir="false" afterPath="$PROJECT_DIR$/Taller_2/train/Dockerfile" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/train/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/Taller_2/train/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/train/train.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/Taller_2/train/train.ipynb" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 2
+}</component>
+  <component name="ProjectId" id="39osLWh8kKrYMtBY79BW9IjZOOW" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;ai.playground.ignore.import.keys.banner.in.settings&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;nivel1/taller__1&quot;,
+    &quot;last_opened_file_path&quot;: &quot;/Users/oscar.arias/Documents/Universidad/2do semestre/MLOPS/Talleres_MLOps&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;configurable.group.python.group.settings&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  }
+}</component>
+  <component name="RecentsManager">
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/Taller_2" />
+    </key>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-js-predefined-d6986cc7102b-9b0f141eb926-JavaScript-PY-253.31033.139" />
+        <option value="bundled-python-sdk-2653e85de345-6d6dccd035ac-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-253.31033.139" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="0e6f557f-ab5d-4bdb-9c8e-b98514977d74" name="Changes" comment="" />
+      <created>1771373701707</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1771373701707</updated>
+      <workItem from="1771373702876" duration="4781000" />
+      <workItem from="1771634510901" duration="3353000" />
+      <workItem from="1771787089729" duration="5284000" />
+      <workItem from="1771792518721" duration="4942000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="github-copilot-workspace">
+    <instructionFileLocations>
+      <option value=".github/instructions" />
+    </instructionFileLocations>
+    <promptFileLocations>
+      <option value=".github/prompts" />
+    </promptFileLocations>
+  </component>
+</project>
