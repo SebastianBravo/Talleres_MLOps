@@ -9,6 +9,8 @@ def load_data():
     # Load the penguins dataset
     penguins = load_penguins()
     print(penguins.head())
+    # Print column names and data types
+    print(penguins.dtypes)
 
 def connect_to_mysql():
     # Connect to MySQL database
