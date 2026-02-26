@@ -1,0 +1,4 @@
+mysql-connector-python>=9.6.0
+palmerpenguins>=0.1.6
+pandas>=3.0.1
+scikit-learn>=1.8.0
