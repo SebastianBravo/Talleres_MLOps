@@ -1,3 +1,4 @@
+import os
 import mysql.connector
 from palmerpenguins import load_penguins
 from airflow import DAG
@@ -9,6 +10,16 @@ def load_data():
     penguins = load_penguins()
     print(penguins.head())
 
+def connect_to_mysql():
+    # Connect to MySQL database
+    connection = mysql.connector.connect(
+        host=os.getenv("MYSQL_HOST"),
+        user=os.getenv("MYSQL_USER"),
+        password=os.getenv("MYSQL_PASSWORD"),
+        database=os.getenv("MYSQL_DATABASE")
+    )
+    print("Connected to MySQL database")
+
 with DAG(dag_id="test",
          description='primer dag',
          start_date=datetime(2026,2,24),
@@ -18,5 +29,10 @@ with DAG(dag_id="test",
         task_id="load_data",
         python_callable=load_data
     )
-    
-    t1
+
+    t2 = PythonOperator(
+        task_id="connect_to_mysql",
+        python_callable=connect_to_mysql
+    )
+
+    t1 >> t2
