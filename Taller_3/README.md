@@ -1,169 +1,207 @@
-# Taller 3 - Apache Airflow con Docker Compose
+# Taller 3 - MLOps: Pipeline de ML con Apache Airflow, MySQL y FastAPI
 
-Este proyecto despliega un entorno completo de Apache Airflow utilizando Docker Compose, con servicios adicionales para orquestación de flujos de trabajo y almacenamiento de datos.
+Este proyecto implementa un pipeline completo de Machine Learning orquestado con Apache Airflow, utilizando Docker Compose para desplegar todos los servicios: base de datos exclusiva para datos (MySQL), metadata de Airflow (PostgreSQL), entrenamiento de modelos y API de inferencia.
 
-## Servicios Desplegados
+## Descripcion del Proyecto
 
-El `docker-compose.yaml` despliega los siguientes servicios:
+### 1. Infraestructura con Docker Compose
 
-### Servicios de Airflow
-- **airflow-webserver**: Interfaz web de Airflow (puerto 8080)
-- **airflow-scheduler**: Programador de tareas de Airflow
-- **airflow-worker**: Trabajador Celery para ejecutar tareas
-- **airflow-triggerer**: Servicio para triggers asíncronos
-- **airflow-init**: Servicio de inicialización (crea usuario admin y configura la base de datos)
+Todos los servicios corren en el mismo `docker-compose.yaml`:
 
-### Servicios de Soporte
-- **postgres**: Base de datos PostgreSQL para metadata de Airflow
-- **redis**: Broker de mensajes para CeleryExecutor
-- **mysql_db**: Base de datos MySQL para uso en los DAGs
+| Servicio | Imagen | Proposito | Puerto |
+|---|---|---|---|
+| **mysql_db** | mysql:8.0 | Base de datos exclusiva para datos (penguins) | 3306 |
+| **postgres** | postgres:13 | Metadata de Airflow (DAG runs, task instances) | 5432 |
+| **redis** | redis:7.2 | Broker de mensajes para CeleryExecutor | 6379 |
+| **airflow-webserver** | Custom | Interfaz web de Airflow | 8080 |
+| **airflow-scheduler** | Custom | Programador de tareas | - |
+| **airflow-worker** | Custom | Ejecutor de tareas via Celery | - |
+| **airflow-triggerer** | Custom | Triggers asincronos | - |
+| **airflow-init** | Custom | Inicializacion de BD y usuario admin | - |
+| **api** | Custom | API FastAPI para inferencia | 8000 |
 
-### Configuración
-- **Executor**: CeleryExecutor (permite ejecución distribuida de tareas)
-- **Usuario por defecto**: airflow / airflow
-- **Puerto web**: http://localhost:8080
+La separacion de bases de datos garantiza que MySQL es **exclusiva para datos del proyecto** y PostgreSQL maneja unicamente la metadata de Airflow.
 
-## Estructura de Carpetas
+### 2. DAG de Entrenamiento (`train_dag`)
+
+El DAG `train_dag` orquesta el pipeline completo de ML con 4 tareas secuenciales:
+
+**`clean_database`** -> **`load_raw_data`** -> **`preprocess_data`** -> **`train_models`**
+
+![graph](img/graph.png)
+
+#### Tarea 1: Borrar contenido de la base de datos
+
+Elimina las tablas `penguins_raw` y `penguins_cleaned` para ejecutar el pipeline desde cero. Verifica que la base de datos quede limpia.
+
+![clean_database](img/clean_database.png)
+
+#### Tarea 2: Cargar datos crudos sin preprocesamiento
+
+Carga el dataset Palmer Penguins (344 filas) directamente a la tabla `penguins_raw` en MySQL, incluyendo valores nulos, sin ningun preprocesamiento.
+
+![load_raw_data](img/load_raw_data.png)
+
+#### Tarea 3: Preprocesamiento de datos
+
+Lee los datos crudos de `penguins_raw`, aplica las siguientes transformaciones y guarda en `penguins_cleaned`:
+
+- Eliminacion de filas con valores nulos (344 -> 333 filas)
+- Eliminacion de duplicados
+- Codificacion de `species` a numerico (Adelie=0, Chinstrap=1, Gentoo=2)
+- One-hot encoding de `island` y `sex`
+
+![preprocess_data](img/preprocess_data.png)
+
+#### Tarea 4: Entrenamiento de modelos
+
+Lee los datos preprocesados de `penguins_cleaned`, divide en train/test (70/30), y entrena 3 modelos:
+
+- **SVM** con `StandardScaler` (Pipeline) - kernel RBF, C=1.0
+- **Logistic Regression** con `StandardScaler` (Pipeline) - max_iter=1000
+- **Random Forest** - 100 estimadores
+
+Cada modelo se evalua con accuracy y classification report, y se guarda como `.pkl` en un volumen compartido.
+
+![train_models](img/train_models.png)
+
+### 3. API de Inferencia (FastAPI)
+
+API REST que carga los modelos entrenados y expone endpoints para clasificar especies de pinguinos.
+
+#### Modelo de Datos
+
+| Campo | Tipo | Descripcion |
+|---|---|---|
+| `island` | Literal["Biscoe", "Dream", "Torgersen"] | Isla de observacion |
+| `bill_length_mm` | float | Longitud del pico (mm) |
+| `bill_depth_mm` | float | Profundidad del pico (mm) |
+| `flipper_length_mm` | float | Longitud de la aleta (mm) |
+| `body_mass_g` | float | Masa corporal (g) |
+| `sex` | Literal["male", "female"] | Sexo |
+| `year` | int | Ano de observacion |
+
+#### Endpoints
+
+- **GET `/health`** - Healthcheck del servicio
+- **GET `/models`** - Lista los modelos entrenados disponibles
+- **POST `/predict`** - Predice la especie usando el modelo seleccionado
+
+Ejemplo de request:
+
+```json
+{
+  "model": "random_forest",
+  "data": {
+    "island": "Biscoe",
+    "bill_length_mm": 45.1,
+    "bill_depth_mm": 14.5,
+    "flipper_length_mm": 215,
+    "body_mass_g": 5000,
+    "sex": "male",
+    "year": 2007
+  }
+}
+```
+
+![docs_api](img/docs_api.png)
+
+## Estructura del Proyecto
 
 ```
 Taller_3/
-├── docker-compose.yaml        # Configuración de servicios Docker
-├── .env                        # Variables de entorno (crear manualmente)
-├── .env.example               # Ejemplo de variables de entorno
+├── docker-compose.yaml          # Todos los servicios
+├── .env                         # Variables de entorno
+├── README.md
+├── img/                         # Imagenes de documentacion
+├── api/
+│   ├── Dockerfile               # Imagen de la API
+│   ├── requirements.txt         # Dependencias de la API
+│   └── main.py                  # FastAPI con endpoints
 └── Airflow/
-    ├── Dockerfile             # Imagen personalizada de Airflow
-    ├── requirements.txt       # Dependencias Python para los DAGs
-    ├── config/               # Archivos de configuración personalizados
-    ├── dags/                 # Directorio de DAGs
-    │   └── test.py          # DAG de ejemplo
-    ├── logs/                # Logs de ejecución de Airflow
-    └── plugins/             # Plugins personalizados de Airflow
+    ├── Dockerfile               # Imagen custom de Airflow
+    ├── requirements.txt         # Dependencias para DAGs
+    └── dags/
+        ├── db_utils.py          # Utilidades de base de datos
+        ├── train_utils.py       # Utilidades de entrenamiento
+        └── train_dag.py         # DAG principal
 ```
 
-## Dockerfile Personalizado
+## Pasos para Ejecutar
 
-El proyecto utiliza un Dockerfile personalizado que extiende la imagen oficial de Apache Airflow (`apache/airflow:2.11.1`). Este Dockerfile instala automáticamente las dependencias necesarias para los DAGs desde el archivo `requirements.txt`, que incluye:
-
-- `mysql-connector-python`: Para conectar con bases de datos MySQL
-- `palmerpenguins`: Dataset de ejemplo para análisis
-- `pandas`: Manipulación y análisis de datos
-- `scikit-learn`: Biblioteca de machine learning
-
-Esto permite que todos los contenedores de Airflow tengan las mismas dependencias instaladas sin necesidad de instalarlas en tiempo de ejecución.
-
-## Pasos para Configurar y Ejecutar
-
-### 1. Crear las Carpetas Necesarias
-
-En la carpeta `Airflow`, crear los directorios para configuración, logs y plugins:
+### 1. Construir imagenes e inicializar Airflow
 
 ```bash
-mkdir -p ./Airflow/config ./Airflow/logs ./Airflow/plugins
+docker-compose build --no-cache
+docker-compose up airflow-init
 ```
 
-O si ya estás dentro de la carpeta Airflow:
+### 2. Levantar todos los servicios
 
 ```bash
-mkdir -p ./config ./logs ./plugins
+docker-compose up -d
 ```
 
-### 2. Configurar Variables de Entorno
-
-Crear un archivo `.env` en la raíz del proyecto (Taller_3) con las siguientes variables:
-
-#### En Linux/macOS:
-```bash
-echo -e "AIRFLOW_UID=$(id -u)\nAIRFLOW_PROJ_DIR=./Airflow" > .env
-```
-
-#### En Windows (Git Bash):
-```bash
-echo -e "AIRFLOW_UID=50000\nAIRFLOW_PROJ_DIR=./Airflow" > .env
-```
-
-#### Manualmente:
-Crea el archivo `.env` con el siguiente contenido:
-```
-AIRFLOW_UID=50000
-AIRFLOW_PROJ_DIR=./Airflow
-```
-
-> **Nota**: En Linux/macOS, `AIRFLOW_UID` debe coincidir con tu UID de usuario para evitar problemas de permisos. En Windows, puedes usar 50000 como valor por defecto.
-
-### 3. Construir y Levantar los Servicios
-
-Ejecutar el siguiente comando desde la carpeta `Taller_3`:
+### 3. Verificar que todos los servicios estan corriendo
 
 ```bash
-docker compose up --build
+docker-compose ps
 ```
 
-Este comando:
-- Construye la imagen personalizada de Airflow con las dependencias
-- Inicia todos los servicios definidos en docker-compose.yaml
-- Inicializa la base de datos y crea el usuario administrador
+### 4. Acceder a los servicios
 
-### 4. Acceder a Airflow
+- **Airflow UI**: http://localhost:8080 (usuario: `airflow`, password: `airflow`)
+- **API docs**: http://localhost:8000/docs
+- **API health**: http://localhost:8000/health
 
-Una vez que todos los servicios estén corriendo:
+### 5. Ejecutar el DAG
 
-1. Abrir el navegador en: http://localhost:8080
-2. Iniciar sesión con las credenciales:
-   - **Usuario**: airflow
-   - **Contraseña**: airflow
+Desde la UI de Airflow, activar y ejecutar `train_dag`. O desde terminal:
 
-## Variables de Entorno MySQL
-
-Los DAGs tienen acceso a las siguientes variables de entorno para conectarse a MySQL:
-
-- `MYSQL_HOST`: mysql_db
-- `MYSQL_USER`: airflow
-- `MYSQL_PASSWORD`: airflow
-- `MYSQL_DATABASE`: airflow
-
-Estas variables están configuradas en el `docker-compose.yaml` y son accesibles desde cualquier tarea de los DAGs.
-
-## Comandos Útiles
-
-### Detener los servicios
 ```bash
-docker compose down
+docker-compose exec airflow-worker airflow dags test train_dag 2026-02-24
 ```
 
-### Ver logs de un servicio específico
+### 6. Probar la API
+
 ```bash
-docker compose logs airflow-webserver
-docker compose logs airflow-scheduler
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"model":"random_forest","data":{"island":"Biscoe","bill_length_mm":45.1,"bill_depth_mm":14.5,"flipper_length_mm":215,"body_mass_g":5000,"sex":"male","year":2007}}'
 ```
 
-### Reconstruir las imágenes
+## Comandos Utiles
+
 ```bash
-docker compose build
+# Ver logs de un servicio
+docker-compose logs airflow-webserver --tail 30
+
+# Ver estado de los contenedores
+docker-compose ps
+
+# Reiniciar un servicio
+docker-compose restart airflow-worker
+
+# Verificar base de datos MySQL
+docker-compose exec mysql_db mysql -u airflow -pairflow penguins_data -e "SHOW TABLES;"
+
+# Verificar metadata de Airflow en PostgreSQL
+docker-compose exec postgres psql -U airflow -d airflow -c "\dt"
+
+# Detener todos los servicios
+docker-compose down
+
+# Detener y eliminar volumenes
+docker-compose down -v
 ```
 
-### Limpiar volúmenes (¡cuidado! elimina datos)
-```bash
-docker compose down -v
-```
+## Tecnologias Utilizadas
 
-## Ejemplo de DAG
-
-El archivo `dags/test.py` contiene un DAG de ejemplo que:
-1. Carga el dataset de Palmer Penguins
-2. Se conecta a la base de datos MySQL
-
-Este DAG demuestra cómo usar las dependencias instaladas y cómo conectarse a MySQL desde los DAGs.
-
-## Troubleshooting
-
-### Error de permisos
-Si encuentras errores de permisos, verifica que `AIRFLOW_UID` en `.env` coincida con tu UID de usuario (en Linux/macOS).
-
-### Los DAGs no aparecen
-- Verifica que los archivos estén en la carpeta `Airflow/dags/`
-- Revisa los logs del scheduler: `docker compose logs airflow-scheduler`
-- Asegúrate de que no haya errores de sintaxis en el DAG
-
-### Servicios no inician
-- Verifica que tienes suficientes recursos (4GB RAM, 2 CPUs recomendados)
-- Revisa los logs: `docker compose logs`
+- **Apache Airflow 2.11.1** - Orquestacion de pipelines
+- **FastAPI** - API REST de inferencia
+- **MySQL 8.0** - Base de datos para datos del proyecto
+- **PostgreSQL 13** - Metadata de Airflow
+- **Redis 7.2** - Broker para CeleryExecutor
+- **Scikit-learn** - Entrenamiento de modelos (SVM, Logistic Regression, Random Forest)
+- **Docker Compose** - Orquestacion de contenedores
+- **Palmer Penguins Dataset** - Conjunto de datos
