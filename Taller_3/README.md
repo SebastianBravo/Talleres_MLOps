@@ -111,7 +111,7 @@ Ejemplo de request:
 ```
 Taller_3/
 ├── docker-compose.yaml          # Todos los servicios
-├── .env                         # Variables de entorno
+├── .env.example                 # Plantilla de variables de entorno
 ├── README.md
 ├── img/                         # Imagenes de documentacion
 ├── api/
@@ -129,32 +129,38 @@ Taller_3/
 
 ## Pasos para Ejecutar
 
-### 1. Construir imagenes e inicializar Airflow
+### 1. Configurar variables de entorno
+
+```bash
+cp .env.example .env
+```
+
+### 2. Construir imagenes e inicializar Airflow
 
 ```bash
 docker-compose build --no-cache
 docker-compose up airflow-init
 ```
 
-### 2. Levantar todos los servicios
+### 3. Levantar todos los servicios
 
 ```bash
 docker-compose up -d
 ```
 
-### 3. Verificar que todos los servicios estan corriendo
+### 4. Verificar que todos los servicios estan corriendo
 
 ```bash
 docker-compose ps
 ```
 
-### 4. Acceder a los servicios
+### 5. Acceder a los servicios
 
 - **Airflow UI**: http://localhost:8080 (usuario: `airflow`, password: `airflow`)
 - **API docs**: http://localhost:8000/docs
 - **API health**: http://localhost:8000/health
 
-### 5. Ejecutar el DAG
+### 6. Ejecutar el DAG
 
 Desde la UI de Airflow, activar y ejecutar `train_dag`. O desde terminal:
 
@@ -162,7 +168,7 @@ Desde la UI de Airflow, activar y ejecutar `train_dag`. O desde terminal:
 docker-compose exec airflow-worker airflow dags test train_dag 2026-02-24
 ```
 
-### 6. Probar la API
+### 7. Probar la API
 
 ```bash
 curl -X POST http://localhost:8000/predict \
