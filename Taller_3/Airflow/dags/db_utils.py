@@ -1,7 +1,14 @@
 import os
 import mysql.connector
 import pandas as pd
+import numpy as np
+import joblib
 from palmerpenguins import load_penguins
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.model_selection import train_test_split
 
 # Function to connect to MySQL database
 def connect_to_mysql():
@@ -53,26 +60,21 @@ def create_table_raw(connection, table_name):
     execute_query(connection, query)
     print(f"Table {table_name} created successfully")
 
-def create_table_cleaned(connection, table_name):
+def create_table_cleaned(connection, table_name, feature_names):
     # Create table with appropriate schema for cleaned penguins dataset
+    # Sanitize column names for MySQL (replace special chars with underscores)
+    sanitized_cols = [name.replace("__", "_").replace(" ", "_") for name in feature_names]
+    feature_columns = ", ".join([f"`{col}` FLOAT" for col in sanitized_cols])
     query = f"""
     CREATE TABLE {table_name} (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        species INT,
-        bill_length_mm FLOAT,
-        bill_depth_mm FLOAT,
-        flipper_length_mm FLOAT,
-        body_mass_g FLOAT,
-        year INT,
-        island_Biscoe BOOLEAN,
-        island_Dream BOOLEAN,
-        island_Torgersen BOOLEAN,
-        sex_female BOOLEAN,
-        sex_male BOOLEAN
+        {feature_columns},
+        dataset VARCHAR(10),
+        species INT
     )
     """
     execute_query(connection, query)
-    print(f"Table {table_name} created successfully")
+    print(f"Table {table_name} created successfully with {len(feature_names)} features")
 
 # Function to insert raw penguin data into the table
 def insert_raw_penguin_data(connection, table_name):
@@ -113,38 +115,102 @@ def load_data_from_mysql(connection, table_name):
     return df
 
 # Function to preprocess data and insert into cleaned table
-def preprocess_and_insert(connection, raw_table, cleaned_table):
+def preprocess_and_insert(connection, raw_table, cleaned_table, preprocessor_path, test_size=0.2, random_state=42):
+    # 1. Load raw data
     df = load_data_from_mysql(connection, raw_table)
     print(f"Datos raw: {len(df)} filas")
 
+    # 2. Drop NaN and duplicates
     rows_before = len(df)
     df = df.dropna()
     df = df.drop_duplicates()
     print(f"Filas eliminadas: {rows_before - len(df)}")
 
+    # 3. Map species to numeric
     species_map = {"Adelie": 0, "Chinstrap": 1, "Gentoo": 2}
     df["species"] = df["species"].map(species_map)
 
-    df = pd.get_dummies(df, columns=["island", "sex"], dtype=int)
+    # 4. Separate X and y
+    X = df.drop(columns=["species"])
+    y = df["species"]
 
-    print(f"Datos limpios: {len(df)} filas")
-    print(f"Columnas: {list(df.columns)}")
-    print(df.head())
+    # 5. Split into train and test
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y
+    )
 
-    create_table_cleaned(connection, cleaned_table)
+    print(f"Train: {len(X_train)}, Test: {len(X_test)}")
 
-    columns = "species, bill_length_mm, bill_depth_mm, flipper_length_mm, " \
-              "body_mass_g, year, island_Biscoe, island_Dream, island_Torgersen, " \
-              "sex_female, sex_male"
-    placeholders = ", ".join(["%s"] * 11)
+    # 6. Define numeric and categorical columns
+    num_cols = ["bill_length_mm", "bill_depth_mm", "flipper_length_mm", "body_mass_g", "year"]
+    cat_cols = ["island", "sex"]
+
+    # 7. Create preprocessing pipeline
+    numeric_pipe = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler())
+    ])
+
+    categorical_pipe = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))
+    ])
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", numeric_pipe, num_cols),
+            ("cat", categorical_pipe, cat_cols)
+        ],
+        remainder="drop"
+    )
+
+    # 8. Fit preprocessor on train data only (avoid data leakage)
+    preprocessor.fit(X_train)
+
+    # 9. Transform all datasets
+    X_train_p = preprocessor.transform(X_train)
+    X_test_p = preprocessor.transform(X_test)
+
+    print("Dimensión tras preprocessing:")
+    print("X_train_p:", X_train_p.shape)
+    print("X_test_p: ", X_test_p.shape)
+
+    # 10. Save preprocessor to models volume
+    os.makedirs(preprocessor_path, exist_ok=True)
+    preprocessor_path = os.path.join(preprocessor_path, "preprocessor.joblib")
+    joblib.dump(preprocessor, preprocessor_path)
+    print(f"Preprocessor guardado en: {preprocessor_path}")
+
+    # 11. Create dataframes with processed data, preserving feature names
+    n_features = X_train_p.shape[1]
+    feature_cols = preprocessor.get_feature_names_out().tolist()
+    print(f"Feature names: {feature_cols}")
+    
+    # Sanitize column names for MySQL compatibility
+    sanitized_cols = [name.replace("__", "_").replace(" ", "_") for name in feature_cols]
+
+    df_train = pd.DataFrame(X_train_p, columns=sanitized_cols)
+    df_train["dataset"] = "train"
+    df_train["species"] = y_train.values
+
+    df_test = pd.DataFrame(X_test_p, columns=sanitized_cols)
+    df_test["dataset"] = "test"
+    df_test["species"] = y_test.values
+
+    df_processed = pd.concat([df_train, df_test], ignore_index=True)
+
+    print(f"Datos procesados: {len(df_processed)} filas, {n_features} features")
+    print(df_processed.head())
+
+    # 12. Create table and insert data
+    create_table_cleaned(connection, cleaned_table, sanitized_cols)
+
+    # 13. Insert data
+    columns = ", ".join([f"`{col}`" for col in sanitized_cols] + ["dataset", "species"])
+    placeholders = ", ".join(["%s"] * (n_features + 2))
     query = f"INSERT INTO {cleaned_table} ({columns}) VALUES ({placeholders})"
 
-    col_order = [
-        "species", "bill_length_mm", "bill_depth_mm", "flipper_length_mm",
-        "body_mass_g", "year", "island_Biscoe", "island_Dream",
-        "island_Torgersen", "sex_female", "sex_male",
-    ]
-    values = [tuple(row) for row in df[col_order].values]
+    values = [tuple(row) for row in df_processed.values]
 
     cursor = connection.cursor()
     cursor.executemany(query, values)

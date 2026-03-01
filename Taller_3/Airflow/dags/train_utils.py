@@ -3,14 +3,13 @@ import joblib
 from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, accuracy_score
 
+# Models without scaler since data is already preprocessed
 MODEL_CONFIGS = {
-    "svm": Pipeline([("scaler", StandardScaler()), ("model", SVC(kernel="rbf", C=1.0))]),
-    "logistic_regression": Pipeline([("scaler", StandardScaler()), ("model", LogisticRegression(max_iter=1000, random_state=42))]),
+    "svm": SVC(kernel="rbf", C=1.0),
+    "logistic_regression": LogisticRegression(max_iter=1000, random_state=42),
     "random_forest": RandomForestClassifier(n_estimators=100, random_state=42),
 }
 

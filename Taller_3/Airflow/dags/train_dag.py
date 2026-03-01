@@ -10,7 +10,7 @@ from db_utils import (
     load_data_from_mysql,
     preprocess_and_insert,
 )
-from train_utils import MODEL_CONFIGS, split_data, train_and_evaluate, save_model
+from train_utils import MODEL_CONFIGS, train_and_evaluate, save_model
 
 MODELS_PATH = "/opt/airflow/models"
 
@@ -42,17 +42,27 @@ def load_raw_data():
 
 def preprocess_data():
     connection = connect_to_mysql()
-    preprocess_and_insert(connection, "penguins_raw", "penguins_cleaned")
+    preprocess_and_insert(connection, "penguins_raw", "penguins_cleaned", MODELS_PATH)
     close_mysql_connection(connection)
 
 
 def train_models():
     connection = connect_to_mysql()
-    df = load_data_from_mysql(connection, "penguins_cleaned")
+    df_all = load_data_from_mysql(connection, "penguins_cleaned")
     close_mysql_connection(connection)
 
-    print(f"Datos para entrenamiento: {len(df)} filas")
-    X_train, X_test, y_train, y_test = split_data(df)
+    # Filter by dataset split
+    df_train = df_all[df_all["dataset"] == "train"]
+    df_test = df_all[df_all["dataset"] == "test"]
+
+    print(f"Datos para entrenamiento: {len(df_train)} filas")
+    print(f"Datos para prueba: {len(df_test)} filas")
+
+    # Separate features and target
+    X_train = df_train.drop(columns=["species", "dataset"])
+    y_train = df_train["species"]
+    X_test = df_test.drop(columns=["species", "dataset"])
+    y_test = df_test["species"]
 
     for name, model in MODEL_CONFIGS.items():
         print(f"\n{'='*50}")
