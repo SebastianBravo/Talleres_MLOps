@@ -8,7 +8,7 @@ Este proyecto implementa un pipeline completo de Machine Learning orquestado con
 
 Todos los servicios corren en el mismo `docker-compose.yaml`:
 
-| Servicio | Imagen | Proposito | Puerto |
+| Servicio | Imagen | Propósito | Puerto |
 |---|---|---|---|
 | **mysql_db** | mysql:8.0 | Base de datos exclusiva para datos (penguins) | 3306 |
 | **postgres** | postgres:13 | Metadata de Airflow (DAG runs, task instances) | 5432 |
