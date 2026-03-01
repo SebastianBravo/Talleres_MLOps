@@ -61,11 +61,17 @@ def preprocess_input(penguin: Penguin) -> pd.DataFrame:
         "island": penguin.island,
         "sex": penguin.sex,
     }])
-    
+
     # Load and use the preprocessor
     preprocessor = get_preprocessor()
     X_processed = preprocessor.transform(raw_data)
-    
+
+    # Preserve feature names used during training, when available
+    if hasattr(preprocessor, "get_feature_names_out"):
+        feature_names = preprocessor.get_feature_names_out()
+        return pd.DataFrame(X_processed, columns=feature_names)
+
+    # Fallback: return DataFrame without explicit column names (previous behavior)
     return pd.DataFrame(X_processed)
 
 
