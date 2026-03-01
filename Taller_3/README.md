@@ -46,28 +46,57 @@ Carga el dataset Palmer Penguins (344 filas) directamente a la tabla `penguins_r
 
 Lee los datos crudos de `penguins_raw`, aplica las siguientes transformaciones y guarda en `penguins_cleaned`:
 
-- Eliminacion de filas con valores nulos (344 -> 333 filas)
-- Eliminacion de duplicados
-- Codificacion de `species` a numerico (Adelie=0, Chinstrap=1, Gentoo=2)
-- One-hot encoding de `island` y `sex`
+1. **Limpieza de datos**:
+   - Eliminacion de filas con valores nulos (344 -> 333 filas)
+   - Eliminacion de duplicados
+   - Codificacion de `species` a numerico (Adelie=0, Chinstrap=1, Gentoo=2)
+
+2. **Split train/test (80/20)** con estratificacion por especie antes del preprocesamiento para evitar data leakage
+
+3. **Pipeline de preprocesamiento con sklearn**:
+   - **Features numericas** (`bill_length_mm`, `bill_depth_mm`, `flipper_length_mm`, `body_mass_g`, `year`):
+     - Imputacion con mediana (`SimpleImputer`)
+     - Escalado estandar (`StandardScaler`)
+   - **Features categoricas** (`island`, `sex`):
+     - Imputacion con moda (`SimpleImputer`)
+     - One-hot encoding (`OneHotEncoder`)
+   - Utiliza `ColumnTransformer` para aplicar transformaciones especificas a cada tipo
+
+4. **Fit y transform**:
+   - El preprocessor se ajusta **solo con datos de train** (evita data leakage)
+   - Se transforma train y test con el mismo preprocessor
+
+5. **Persistencia**:
+   - El preprocessor se guarda como `preprocessor.joblib` en el volumen compartido de models
+   - Los datos procesados se guardan en `penguins_cleaned` con:
+     - Nombres de features descriptivos (ej: `num_bill_length_mm`, `cat_island_Biscoe`)
+     - Columna `dataset` indicando si es 'train' o 'test'
+     - Columna `species` con el target numerico
 
 ![preprocess_data](img/preprocess_data.png)
 
 #### Tarea 4: Entrenamiento de modelos
 
-Lee los datos preprocesados de `penguins_cleaned`, divide en train/test (70/30), y entrena 3 modelos:
+Lee los datos preprocesados de `penguins_cleaned`, filtra por el campo `dataset` (train/test), y entrena 3 modelos:
 
-- **SVM** con `StandardScaler` (Pipeline) - kernel RBF, C=1.0
-- **Logistic Regression** con `StandardScaler` (Pipeline) - max_iter=1000
+- **SVM** - kernel RBF, C=1.0
+- **Logistic Regression** - max_iter=1000
 - **Random Forest** - 100 estimadores
 
-Cada modelo se evalua con accuracy y classification report, y se guarda como `.pkl` en un volumen compartido.
+Cada modelo se evalua con accuracy y classification report sobre el conjunto de test, y se guarda como `.pkl` en el volumen compartido con los nombres `svm.pkl`, `logistic_regression.pkl` y `random_forest.pkl`.
 
 ![train_models](img/train_models.png)
 
 ### 3. API de Inferencia (FastAPI)
 
-API REST que carga los modelos entrenados y expone endpoints para clasificar especies de pinguinos.
+API REST que carga los modelos entrenados y el preprocessor guardado para clasificar especies de pinguinos.
+
+**Pipeline de inferencia**:
+1. Recibe datos crudos del pinguino (island, bill_length_mm, etc.)
+2. Carga el `preprocessor.joblib` guardado durante el entrenamiento
+3. Transforma los datos usando el mismo preprocesamiento que train
+4. Aplica el modelo seleccionado para predecir la especie
+5. Retorna la prediccion con el nombre de la especie
 
 #### Modelo de Datos
 
@@ -84,8 +113,8 @@ API REST que carga los modelos entrenados y expone endpoints para clasificar esp
 #### Endpoints
 
 - **GET `/health`** - Healthcheck del servicio
-- **GET `/models`** - Lista los modelos entrenados disponibles
-- **POST `/predict`** - Predice la especie usando el modelo seleccionado
+- **GET `/models`** - Lista los modelos entrenados disponibles y verifica si existe el preprocessor
+- **POST `/predict`** - Predice la especie usando el modelo seleccionado y el preprocessor guardado
 
 Ejemplo de request:
 
@@ -105,6 +134,7 @@ Ejemplo de request:
 ```
 
 ![docs_api](img/docs_api.png)
+![random_forest](img/random_forest.png)
 
 ## Estructura del Proyecto
 
