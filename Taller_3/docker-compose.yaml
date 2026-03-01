@@ -77,12 +77,13 @@ x-airflow-common:
     MYSQL_HOST: mysql_db
     MYSQL_USER: airflow
     MYSQL_PASSWORD: airflow
-    MYSQL_DATABASE: airflow
+    MYSQL_DATABASE: penguins_data
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+    - models-volume:/opt/airflow/models
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -98,16 +99,18 @@ services:
     image: mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: airflow
-      MYSQL_DATABASE: airflow
+      MYSQL_DATABASE: penguins_data
       MYSQL_USER: airflow
       MYSQL_PASSWORD: airflow
+    ports:
+      - "3306:3306"
     volumes:
       - mysql-db-volume:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "airflow", "-p${MYSQL_PASSWORD}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "airflow", "-pairflow"]
       interval: 10s
       retries: 5
-      start_period: 5s
+      start_period: 30s
     restart: always
   postgres:
     image: postgres:13
@@ -259,6 +262,8 @@ services:
         fi
         mkdir -p /sources/logs /sources/dags /sources/plugins
         chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        mkdir -p /opt/airflow/models
+        chown -R "${AIRFLOW_UID}:0" /opt/airflow/models
         exec /entrypoint airflow version
     # yamllint enable rule:line-length
     environment:
@@ -307,6 +312,21 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  api:
+    build: ./api
+    ports:
+      - "8000:8000"
+    volumes:
+      - models-volume:/app/models
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    restart: always
+
 volumes:
   postgres-db-volume:
   mysql-db-volume:
+  models-volume:
