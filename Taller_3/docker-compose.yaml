@@ -276,6 +276,7 @@ services:
     user: "0:0"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}:/sources
+      - models-volume:/opt/airflow/models
 
   airflow-cli:
     <<: *airflow-common
