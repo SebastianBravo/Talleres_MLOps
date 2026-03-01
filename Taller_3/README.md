@@ -2,7 +2,7 @@
 
 Este proyecto implementa un pipeline completo de Machine Learning orquestado con Apache Airflow, utilizando Docker Compose para desplegar todos los servicios: base de datos exclusiva para datos (MySQL), metadata de Airflow (PostgreSQL), entrenamiento de modelos y API de inferencia.
 
-## Descripcion del Proyecto
+## Descripción del Proyecto
 
 ### 1. Infraestructura con Docker Compose
 
