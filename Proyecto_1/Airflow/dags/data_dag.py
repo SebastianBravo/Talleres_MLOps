@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from db_utils import (
     connect_to_mysql,
     close_mysql_connection,
@@ -8,13 +8,7 @@ from db_utils import (
     create_table_raw,
     get_data_from_api,
     insert_raw_covertype_data,
-    # insert_raw_penguin_data,
-    # load_data_from_mysql,
-    # preprocess_and_insert,
 )
-# from train_utils import MODEL_CONFIGS, train_and_evaluate, save_model
-
-# MODELS_PATH = "/opt/airflow/models"
 
 def create_tables():
     # Validate tables
@@ -35,61 +29,78 @@ def create_tables():
         print(f"Tablas existentes: {[t[0] for t in tables]}")
         print("No se crearán tablas nuevas para evitar conflictos")
 
-def load_raw_data():
-    # Request data from API and print summary
+def load_raw_data(**context):
+    """Load raw data from API. Pushes flags to XCom."""
     df = get_data_from_api()
 
     if df is not None and not df.empty:
-        # Insert data into MySQL
+        # Data was returned, insert into MySQL
         connection = connect_to_mysql()
         insert_raw_covertype_data(connection, "covertype_raw", df)
         close_mysql_connection(connection)
+        # New data was loaded, but not all batches collected yet
+        context['ti'].xcom_push(key='new_data_loaded', value=True)
+        context['ti'].xcom_push(key='all_data_collected', value=False)
+    else:
+        # No new data (either all collected or error)
+        context['ti'].xcom_push(key='new_data_loaded', value=False)
+        context['ti'].xcom_push(key='all_data_collected', value=True)
 
-# def preprocess_data():
-#     connection = connect_to_mysql()
-#     preprocess_and_insert(connection, "penguins_raw", "penguins_cleaned", MODELS_PATH)
-#     close_mysql_connection(connection)
+def check_should_preprocess(**context):
+    """Only proceed to preprocessing if all data is collected AND new data was just loaded in this run.
+    
+    Returns True only on the FIRST run where the API says all data is collected,
+    meaning the last batch was just inserted. On subsequent runs, no new data
+    is loaded so we skip.
+    """
+    new_data_loaded = context['ti'].xcom_pull(task_ids='load_raw_data', key='new_data_loaded')
+    all_data_collected = context['ti'].xcom_pull(task_ids='load_raw_data', key='all_data_collected')
 
+    if new_data_loaded:
+        print("New data was loaded. Waiting for all batches to be collected before preprocessing.")
+        return False
+    elif all_data_collected and not new_data_loaded:
+        # Check if preprocessing was already done by looking at the cleaned table
+        connection = connect_to_mysql()
+        cursor = connection.cursor()
+        cursor.execute("SHOW TABLES LIKE 'covertype_cleaned'")
+        cleaned_exists = cursor.fetchone()
+        close_mysql_connection(connection)
 
-# def train_models():
-#     connection = connect_to_mysql()
-#     df_all = load_data_from_mysql(connection, "penguins_cleaned")
-#     close_mysql_connection(connection)
+        if cleaned_exists:
+            print("All data already collected and preprocessed. Skipping.")
+            return False
+        else:
+            print("All data collected. Proceeding to preprocessing.")
+            return True
+    else:
+        print("No data available. Skipping preprocessing.")
+        return False
 
-#     # Filter by dataset split
-#     df_train = df_all[df_all["dataset"] == "train"]
-#     df_test = df_all[df_all["dataset"] == "test"]
-
-#     print(f"Datos para entrenamiento: {len(df_train)} filas")
-#     print(f"Datos para prueba: {len(df_test)} filas")
-
-#     # Separate features and target
-#     X_train = df_train.drop(columns=["species", "dataset"])
-#     y_train = df_train["species"]
-#     X_test = df_test.drop(columns=["species", "dataset"])
-#     y_test = df_test["species"]
-
-#     for name, model in MODEL_CONFIGS.items():
-#         print(f"\n{'='*50}")
-#         print(f"Entrenando: {name}")
-#         print(f"{'='*50}")
-#         trained_model = train_and_evaluate(model, X_train, X_test, y_train, y_test)
-#         save_model(trained_model, MODELS_PATH, name)
-
+def preprocess_data():
+    print("Preprocesando datos...")
+    # connection = connect_to_mysql()
+    # preprocess_and_insert(connection, "covertype_raw", "covertype_cleaned", MODELS_PATH)
+    # close_mysql_connection(connection)
 
 with DAG(
     dag_id="data_dag",
-    description="DAG para cargar datos desde API",
+    description="DAG para cargar datos desde API cada 5 minutos",
+    # schedule_interval="*/1 * * * *",
+    schedule_interval=timedelta(seconds=20),
     start_date=datetime(2026, 2, 24),
-    schedule_interval="@once",
     max_active_runs=1,
     catchup=False,
 ) as dag:
 
     t1 = PythonOperator(task_id="create_tables", python_callable=create_tables)
     t2 = PythonOperator(task_id="load_raw_data", python_callable=load_raw_data)
-#     t2 = PythonOperator(task_id="load_raw_data", python_callable=load_raw_data)
-#     t3 = PythonOperator(task_id="preprocess_data", python_callable=preprocess_data)
-#     t4 = PythonOperator(task_id="train_models", python_callable=train_models)
 
-    t1 >> t2
+    t2_check = ShortCircuitOperator(
+        task_id="check_should_preprocess",
+        python_callable=check_should_preprocess,
+    )
+
+    t3 = PythonOperator(task_id="preprocess_data", python_callable=preprocess_data)
+
+    t1 >> t2 >> t2_check >> t3
