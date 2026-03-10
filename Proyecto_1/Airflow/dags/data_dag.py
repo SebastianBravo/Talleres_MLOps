@@ -13,6 +13,7 @@ from db_utils import (
     preprocess_and_insert,
 )
 
+
 def create_tables():
     # Validate tables
     connection = connect_to_mysql()
@@ -32,6 +33,7 @@ def create_tables():
         print(f"Tablas existentes: {[t[0] for t in tables]}")
         print("No se crearán tablas nuevas para evitar conflictos")
 
+
 def load_raw_data(**context):
     """Load raw data from API. Pushes flags to XCom."""
     df = get_data_from_api()
@@ -42,25 +44,32 @@ def load_raw_data(**context):
         insert_raw_covertype_data(connection, "covertype_raw", df)
         close_mysql_connection(connection)
         # New data was loaded, but not all batches collected yet
-        context['ti'].xcom_push(key='new_data_loaded', value=True)
-        context['ti'].xcom_push(key='all_data_collected', value=False)
+        context["ti"].xcom_push(key="new_data_loaded", value=True)
+        context["ti"].xcom_push(key="all_data_collected", value=False)
     else:
         # No new data (either all collected or error)
-        context['ti'].xcom_push(key='new_data_loaded', value=False)
-        context['ti'].xcom_push(key='all_data_collected', value=True)
+        context["ti"].xcom_push(key="new_data_loaded", value=False)
+        context["ti"].xcom_push(key="all_data_collected", value=True)
+
 
 def check_should_preprocess(**context):
     """Only proceed to preprocessing if all data is collected AND new data was just loaded in this run.
-    
+
     Returns True only on the FIRST run where the API says all data is collected,
     meaning the last batch was just inserted. On subsequent runs, no new data
     is loaded so we skip.
     """
-    new_data_loaded = context['ti'].xcom_pull(task_ids='load_raw_data', key='new_data_loaded')
-    all_data_collected = context['ti'].xcom_pull(task_ids='load_raw_data', key='all_data_collected')
+    new_data_loaded = context["ti"].xcom_pull(
+        task_ids="load_raw_data", key="new_data_loaded"
+    )
+    all_data_collected = context["ti"].xcom_pull(
+        task_ids="load_raw_data", key="all_data_collected"
+    )
 
     if new_data_loaded:
-        print("New data was loaded. Waiting for all batches to be collected before preprocessing.")
+        print(
+            "New data was loaded. Waiting for all batches to be collected before preprocessing."
+        )
         return False
     elif all_data_collected and not new_data_loaded:
         # Check if preprocessing was already done by looking at the cleaned table
@@ -80,20 +89,31 @@ def check_should_preprocess(**context):
         print("No data available. Skipping preprocessing.")
         return False
 
+
 def preprocess_data():
     print("Preprocesando datos...")
     connection = connect_to_mysql()
-    preprocess_and_insert(connection, "covertype_raw", "covertype_cleaned", "")
+    preprocess_and_insert(
+        connection,
+        "covertype_raw",
+        "covertype_cleaned",
+        bucket="covertype-project",
+        preprocessor_path="preprocessor",
+    )
     close_mysql_connection(connection)
+
 
 def pause_dag():
     """Pause this DAG so it stops scheduling new runs."""
     with create_session() as session:
-        dag_model = session.query(DagModel).filter(DagModel.dag_id == "data_dag").first()
+        dag_model = (
+            session.query(DagModel).filter(DagModel.dag_id == "data_dag").first()
+        )
         if dag_model:
             dag_model.is_paused = True
             session.commit()
             print("DAG 'data_dag' has been paused. No more scheduled runs.")
+
 
 with DAG(
     dag_id="data_dag",
