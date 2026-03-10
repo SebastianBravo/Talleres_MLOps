@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
+from airflow.models import DagModel
+from airflow.utils.session import create_session
 from db_utils import (
     connect_to_mysql,
     close_mysql_connection,
@@ -8,6 +10,7 @@ from db_utils import (
     create_table_raw,
     get_data_from_api,
     insert_raw_covertype_data,
+    preprocess_and_insert,
 )
 
 def create_tables():
@@ -79,9 +82,18 @@ def check_should_preprocess(**context):
 
 def preprocess_data():
     print("Preprocesando datos...")
-    # connection = connect_to_mysql()
-    # preprocess_and_insert(connection, "covertype_raw", "covertype_cleaned", MODELS_PATH)
-    # close_mysql_connection(connection)
+    connection = connect_to_mysql()
+    preprocess_and_insert(connection, "covertype_raw", "covertype_cleaned", "")
+    close_mysql_connection(connection)
+
+def pause_dag():
+    """Pause this DAG so it stops scheduling new runs."""
+    with create_session() as session:
+        dag_model = session.query(DagModel).filter(DagModel.dag_id == "data_dag").first()
+        if dag_model:
+            dag_model.is_paused = True
+            session.commit()
+            print("DAG 'data_dag' has been paused. No more scheduled runs.")
 
 with DAG(
     dag_id="data_dag",
@@ -102,5 +114,6 @@ with DAG(
     )
 
     t3 = PythonOperator(task_id="preprocess_data", python_callable=preprocess_data)
+    t4 = PythonOperator(task_id="pause_dag", python_callable=pause_dag)
 
-    t1 >> t2 >> t2_check >> t3
+    t1 >> t2 >> t2_check >> t3 >> t4
