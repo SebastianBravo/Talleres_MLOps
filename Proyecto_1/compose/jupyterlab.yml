@@ -1,0 +1,11 @@
+# JupyterLab para desarrollo y experimentación.
+# Acceso: http://localhost:8888 (token en logs del contenedor).
+
+services:
+  jupyterlab:
+      build: ../model_training
+      ports:
+        - "8889:8888"
+      volumes:
+        - ../model_training:/workspace
+      restart: unless-stopped

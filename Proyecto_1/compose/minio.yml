@@ -1,0 +1,26 @@
+# MinIO: almacenamiento de objetos (S3-compatible). Usado por Airflow para modelos/preprocesador.
+
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    # Host 19000/19001 para evitar conflicto con otro servicio en 9000/9001.
+    # Dentro de la red Docker los contenedores usan minio:9000 (sin cambio en Airflow).
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "alias", "set", "local", "http://localhost:9000", "minioadmin", "minioadmin"]
+      interval: 10s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+volumes:
+  minio-data:

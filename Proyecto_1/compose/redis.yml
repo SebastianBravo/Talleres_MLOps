@@ -1,0 +1,14 @@
+# Redis: broker de Celery para Airflow (CeleryExecutor).
+
+services:
+  redis:
+    image: redis:7.2-bookworm
+    expose:
+      - 6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 30s
+      retries: 50
+      start_period: 30s
+    restart: always
