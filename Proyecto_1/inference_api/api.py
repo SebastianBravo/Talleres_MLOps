@@ -52,15 +52,44 @@ def get_minio_client():
 
 
 BUCKET = os.getenv("MINIO_BUCKET", "covertype-project")
-PREPROCESSOR_KEY = "preprocessor/preprocessor.joblib"
+PREPROCESSOR_PREFIX = "preprocessor/"
 MODELS_PREFIX = "models/"
 
+WILDERNESS_AREAS = ["Rawah", "Neota", "Comanche Peak", "Cache la Poudre"]
+SOIL_TYPES = [
+    "C2702", "C2703", "C2704", "C2705", "C2706", "C2717",
+    "C3501", "C3502", "C4201", "C4703", "C4704", "C4744",
+    "C4758", "C5101", "C5151", "C6101", "C6102", "C6731",
+    "C7101", "C7102", "C7103", "C7201", "C7202", "C7700",
+    "C7701", "C7702", "C7709", "C7710", "C7745", "C7746",
+    "C7755", "C7756", "C7757", "C7790", "C8703", "C8707",
+    "C8708", "C8771", "C8772", "C8776",
+]
 
-@lru_cache(maxsize=1)
-def load_preprocessor():
+
+def bucket_exists(client=None) -> bool:
+    """Comprueba si el bucket de MinIO existe."""
+    if client is None:
+        client = get_minio_client()
+    try:
+        buckets = client.list_buckets().get("Buckets", [])
+        return any(b["Name"] == BUCKET for b in buckets)
+    except Exception:
+        return False
+
+
+@lru_cache(maxsize=10)
+def load_preprocessor_for_model(model_name: str):
+    """Carga el preprocesador asociado al modelo (mismo nombre en preprocessor/{model_name}.joblib)."""
     client = get_minio_client()
+    key = f"{PREPROCESSOR_PREFIX}{model_name}.joblib"
     buf = io.BytesIO()
-    client.download_fileobj(BUCKET, PREPROCESSOR_KEY, buf)
+    try:
+        client.download_fileobj(BUCKET, key, buf)
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchKey":
+            raise FileNotFoundError(f"Preprocessor for model '{model_name}' not found in MinIO.")
+        raise
     buf.seek(0)
     return joblib.load(buf)
 
@@ -80,27 +109,34 @@ def load_model(model_name: str):
     return joblib.load(buf)
 
 
-app = FastAPI()
+app = FastAPI(
+    title="API de inferencia – Covertype",
+    description="Predicción de tipo de cubierta forestal (cover_type 1–7) usando modelos almacenados en MinIO.",
+)
 app.add_middleware(LoggingMiddleware)
 
 
 class CoverTypeFeatures(BaseModel):
-    elevation: int = Field(..., ge=0)
-    aspect: int = Field(..., ge=0)
-    slope: int = Field(..., ge=0)
-    horizontal_distance_to_hydrology: int = Field(..., ge=0)
-    vertical_distance_to_hydrology: int = Field(..., ge=0)
-    horizontal_distance_to_roadways: int = Field(..., ge=0)
-    hillshade_9am: int = Field(..., ge=0, le=255)
-    hillshade_noon: int = Field(..., ge=0, le=255)
-    hillshade_3pm: int = Field(..., ge=0, le=255)
-    horizontal_distance_to_fire_points: int = Field(..., ge=0)
-    wilderness_area: str
-    soil_type: str
+    """Variables del dataset Covertype (Forest Cover Type)."""
+
+    elevation: int = Field(..., ge=0, description="Elevación en metros")
+    aspect: int = Field(..., ge=0, description="Aspecto en grados (0-360)")
+    slope: int = Field(..., ge=0, description="Pendiente en grados")
+    horizontal_distance_to_hydrology: int = Field(..., ge=0, description="Distancia horizontal a agua")
+    vertical_distance_to_hydrology: int = Field(..., ge=0, description="Distancia vertical a agua")
+    horizontal_distance_to_roadways: int = Field(..., ge=0, description="Distancia horizontal a carreteras")
+    hillshade_9am: int = Field(..., ge=0, le=255, description="Sombra 9h")
+    hillshade_noon: int = Field(..., ge=0, le=255, description="Sombra mediodía")
+    hillshade_3pm: int = Field(..., ge=0, le=255, description="Sombra 15h")
+    horizontal_distance_to_fire_points: int = Field(..., ge=0, description="Distancia horizontal a puntos de fuego")
+    wilderness_area: str = Field(..., description="Área wilderness: Rawah, Neota, Comanche Peak, Cache la Poudre")
+    soil_type: str = Field(..., description="Tipo de suelo (ej. C2702, C3501, ...)")
 
 
 class PredictionRequest(BaseModel):
-    model: str
+    """Petición de predicción: nombre del modelo en MinIO y una fila de características Covertype."""
+
+    model: str = Field(..., description="Nombre del modelo (sin .joblib). Ver GET /models")
     data: CoverTypeFeatures
 
 
@@ -121,33 +157,64 @@ def preprocess_input(features: CoverTypeFeatures) -> pd.DataFrame:
     }])
 
 
-@app.get("/models")
+@app.get("/models", summary="Modelos disponibles")
 def list_models():
+    """
+    Lista los modelos disponibles en MinIO (bucket `models/`).
+    Si el bucket no existe o no hay objetos `.joblib`, devuelve lista vacía.
+    """
     client = get_minio_client()
+    if not bucket_exists(client):
+        return {"modelos_disponibles": []}
     try:
         objs = client.list_objects_v2(Bucket=BUCKET, Prefix=MODELS_PREFIX)
     except Exception:
-        return {"models": []}
-    models = []
-    for obj in objs.get("Contents", []):
+        return {"modelos_disponibles": []}
+    modelos = []
+    for obj in objs.get("Contents") or []:
         key = obj["Key"]
         if key.endswith(".joblib"):
             name = key.replace(MODELS_PREFIX, "").replace(".joblib", "")
-            models.append(name)
-    return {"models": models}
+            modelos.append(name)
+    return {"modelos_disponibles": modelos}
 
 
-@app.post("/predict")
+@app.post("/predict", summary="Predecir tipo de cubierta forestal")
 def predict(request: PredictionRequest):
+    """
+    Predice la clase de cubierta forestal (cover_type, 1-7) usando el modelo indicado
+    y las características del dataset Covertype. El modelo se descarga desde MinIO.
+    """
+    client = get_minio_client()
+    if not bucket_exists(client):
+        raise HTTPException(
+            status_code=503,
+            detail="Bucket de MinIO no disponible; no hay modelos para consumir.",
+        )
     X = preprocess_input(request.data)
     try:
-        preprocessor = load_preprocessor()
+        preprocessor = load_preprocessor_for_model(request.model)
         X_t = preprocessor.transform(X)
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Preprocesador para el modelo '{request.model}' no encontrado. Guarde modelo y preprocesador con el mismo nombre en MinIO (preprocessor/).",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchBucket":
+            raise HTTPException(status_code=503, detail="Bucket de MinIO no disponible.")
+        raise HTTPException(status_code=503, detail=f"Error al cargar preprocesador: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Preprocessor error: {str(e)}")
+        raise HTTPException(status_code=503, detail=f"Error en preprocesador: {str(e)}")
     try:
         model = load_model(request.model)
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Model '{request.model}' does not exist")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Modelo '{request.model}' no existe. Use GET /models para listar modelos.",
+        )
     pred = model.predict(X_t)[0]
-    return {"model_used": request.model, "predicted_cover_type": int(pred)}
+    return {
+        "modelo_utilizado": request.model,
+        "prediccion_cover_type": int(pred),
+    }
