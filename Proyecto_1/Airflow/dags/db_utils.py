@@ -70,13 +70,22 @@ def get_data_from_api():
         print(f"Datos obtenidos de la API: {len(data['data'])} registros")
         return pd.DataFrame(data["data"])
     except requests.exceptions.RequestException as e:
-        data = response.json()
-        if data["detail"] == "Ya se recolectó toda la información minima necesaria":
-            print(
-                "Ya se recolectó toda la información mínima necesaria. No se cargarán nuevos datos."
-            )
-        else:
-            print(f"Error al cargar datos desde la API: {e}")
+        response_obj = getattr(e, "response", None)
+        if response_obj is not None:
+            try:
+                data = response_obj.json()
+                if (
+                    data.get("detail")
+                    == "Ya se recolectó toda la información minima necesaria"
+                ):
+                    print(
+                        "Ya se recolectó toda la información mínima necesaria. No se cargarán nuevos datos."
+                    )
+                    return pd.DataFrame()
+            except ValueError:
+                pass
+
+        print(f"Error al cargar datos desde la API: {e}")
         return None  # Retornar None en caso de error
 
 
@@ -121,7 +130,7 @@ def create_table_cleaned(connection, table_name, feature_names):
     ]
     feature_columns = ", ".join([f"`{col}` FLOAT" for col in sanitized_cols])
     query = f"""
-    CREATE TABLE {table_name} (
+    CREATE TABLE IF NOT EXISTS {table_name} (
         id INT AUTO_INCREMENT PRIMARY KEY,
         {feature_columns},
         dataset VARCHAR(10),
@@ -202,17 +211,10 @@ def preprocess_and_insert(
     print(f"Filas eliminadas (nulos y duplicados): {rows_before - len(df)}")
 
     # 3. Separar características (X) y variable objetivo (y)
-    X = df.drop(columns=["cover_type"])
+    X = df.drop(columns=["cover_type"]).copy()
     y = df["cover_type"]
 
-    # 4. Dividir en conjuntos de entrenamiento y prueba
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state, stratify=y
-    )
-
-    print(f"Entrenamiento: {len(X_train)} filas, Prueba: {len(X_test)} filas")
-
-    # 5. Definir columnas numéricas y categóricas
+    # 4. Definir columnas numéricas y categóricas
     num_cols = [
         "elevation",
         "aspect",
@@ -227,6 +229,18 @@ def preprocess_and_insert(
     ]
     cat_cols = ["wilderness_area", "soil_type"]
 
+    # Definir categorías usando todo el conjunto disponible en esta iteración
+    # (incluye filas que luego quedarán en train y test)
+    X[cat_cols] = X[cat_cols].astype(str)
+    all_categories = [sorted(X[col].dropna().unique().tolist()) for col in cat_cols]
+
+    # 5. Dividir en conjuntos de entrenamiento y prueba
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y
+    )
+
+    print(f"Entrenamiento: {len(X_train)} filas, Prueba: {len(X_test)} filas")
+
     # 6. Crear pipeline de preprocesamiento
     # Pipeline numérico: imputación por mediana + escalado estándar
     numeric_pipe = Pipeline(
@@ -240,7 +254,14 @@ def preprocess_and_insert(
     categorical_pipe = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+            (
+                "onehot",
+                OneHotEncoder(
+                    categories=all_categories,
+                    handle_unknown="ignore",
+                    sparse_output=False,
+                ),
+            ),
         ]
     )
 
@@ -313,7 +334,9 @@ def preprocess_and_insert(
     print(f"Datos procesados: {len(df_processed)} filas, {n_features} características")
     print(df_processed.head())
 
-    # 11. Crear la tabla limpia e insertar los datos
+    # 11. Re-crear la tabla limpia en cada iteración para soportar
+    # cambios en columnas por nuevas categorías del one-hot encoding
+    delete_table_if_exists(connection, cleaned_table)
     create_table_cleaned(connection, cleaned_table, sanitized_cols)
 
     # 12. Insertar datos procesados en la tabla limpia
