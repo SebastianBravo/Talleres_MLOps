@@ -13,7 +13,7 @@
 #   docker compose -f compose/data_api.yml up -d
 #   docker compose -f compose/jupyterlab.yml up -d
 #
-# Variables recomendadas en .env: AIRFLOW_UID, AIRFLOW_PROJ_DIR=./Airflow
+# Variables recomendadas en .env: AIRFLOW_UID, AIRFLOW_PROJ_DIR=../Airflow
 
 include:
   - compose/minio.yml

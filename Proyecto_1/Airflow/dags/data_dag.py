@@ -42,7 +42,13 @@ def load_raw_data(**context):
     """
     df = get_data_from_api()
 
-    if df is not None and not df.empty:
+    if df is None:
+        print("No fue posible obtener datos de la API en esta ejecución.")
+        context["ti"].xcom_push(key="new_data_loaded", value=False)
+        context["ti"].xcom_push(key="all_data_collected", value=False)
+        return
+
+    if not df.empty:
         # Se obtuvieron datos, insertarlos en MySQL
         connection = connect_to_mysql()
         insert_raw_covertype_data(connection, "covertype_raw", df)
@@ -59,12 +65,7 @@ def load_raw_data(**context):
 def check_should_preprocess(**context):
     """Verifica si se debe proceder al preprocesamiento.
 
-    Solo retorna True cuando se cumplan TODAS estas condiciones:
-    - La API indica que ya se recolectaron todos los datos.
-    - No se cargaron datos nuevos en esta ejecución (último batch ya fue insertado antes).
-    - La tabla limpia aún no existe o está vacía (no se ha preprocesado antes).
-
-    En ejecuciones posteriores, al ya existir la tabla con datos, se omite el preprocesamiento.
+    Retorna True cuando en esta ejecución se cargaron datos nuevos.
     """
     new_data_loaded = context["ti"].xcom_pull(
         task_ids="load_raw_data", key="new_data_loaded"
@@ -74,43 +75,31 @@ def check_should_preprocess(**context):
     )
 
     if new_data_loaded:
-        # Aún se están recolectando batches, no preprocesar todavía
+        print("Hay datos nuevos: se ejecutará preprocesamiento en esta iteración.")
+        return True
+
+    if all_data_collected:
         print(
-            "Se cargaron datos nuevos. Esperando a que se recolecten todos los batches antes de preprocesar."
+            "La API reportó que ya se recolectó toda la información mínima. Se omite preprocesamiento."
         )
         return False
-    elif all_data_collected and not new_data_loaded:
-        # Verificar si el preprocesamiento ya se realizó revisando la tabla limpia
-        connection = connect_to_mysql()
-        cursor = connection.cursor()
-        cursor.execute("SHOW TABLES LIKE 'covertype_cleaned'")
-        cleaned_exists = cursor.fetchone()
 
-        if cleaned_exists:
-            # La tabla existe, verificar si tiene datos
-            cursor.execute("SELECT COUNT(*) FROM covertype_cleaned")
-            row_count = cursor.fetchone()[0]
-            close_mysql_connection(connection)
+    print("No hubo datos nuevos en esta ejecución. Se omite preprocesamiento.")
+    return False
 
-            if row_count > 0:
-                print(
-                    f"Todos los datos ya fueron recolectados y preprocesados ({row_count} filas en covertype_cleaned). Omitiendo."
-                )
-                return False
-            else:
-                print(
-                    "La tabla limpia existe pero está vacía. Procediendo al preprocesamiento."
-                )
-                return True
-        else:
-            close_mysql_connection(connection)
-            print(
-                "Todos los datos fueron recolectados. Procediendo al preprocesamiento."
-            )
-            return True
-    else:
-        print("No hay datos disponibles. Omitiendo preprocesamiento.")
-        return False
+
+def check_should_pause(**context):
+    """Pausa el DAG únicamente cuando la API reporta fin de recolección."""
+    all_data_collected = context["ti"].xcom_pull(
+        task_ids="load_raw_data", key="all_data_collected"
+    )
+
+    if all_data_collected:
+        print("No hay más datos por recolectar. Se pausará el DAG.")
+        return True
+
+    print("Aún hay datos por recolectar. El DAG continuará ejecutándose.")
+    return False
 
 
 def preprocess_data():
@@ -158,8 +147,8 @@ with DAG(
     # Tarea 2: Cargar datos crudos desde la API
     t2 = PythonOperator(task_id="load_raw_data", python_callable=load_raw_data)
 
-    # Verificación: ¿Se debe preprocesar? (Omite tareas posteriores si no)
-    t2_check = ShortCircuitOperator(
+    # Verificación: ¿Se debe preprocesar en esta iteración?
+    t2_check_preprocess = ShortCircuitOperator(
         task_id="check_should_preprocess",
         python_callable=check_should_preprocess,
     )
@@ -167,8 +156,16 @@ with DAG(
     # Tarea 3: Preprocesar datos crudos e insertar en tabla limpia
     t3 = PythonOperator(task_id="preprocess_data", python_callable=preprocess_data)
 
+    # Verificación: ¿Se debe pausar el DAG?
+    t2_check_pause = ShortCircuitOperator(
+        task_id="check_should_pause",
+        python_callable=check_should_pause,
+    )
+
     # Tarea 4: Pausar el DAG para detener ejecuciones futuras
     t4 = PythonOperator(task_id="pause_dag", python_callable=pause_dag)
 
-    # Flujo: crear tablas → cargar datos → verificar → preprocesar → pausar DAG
-    t1 >> t2 >> t2_check >> t3 >> t4
+    # Flujo: crear tablas -> cargar datos -> (si hay nuevos, preprocesar) y (si se completó, pausar)
+    t1 >> t2
+    t2 >> t2_check_preprocess >> t3
+    t2 >> t2_check_pause >> t4
