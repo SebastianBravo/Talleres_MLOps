@@ -283,7 +283,7 @@ def preprocess_and_insert(
     # Subir preprocesador a MinIO
     print(f"Subiendo preprocesador al bucket '{bucket}' en MinIO...")
     minio_client.upload_file(
-        preprocessor_path, bucket, "preprocessor/preprocessor.joblib"
+        preprocessor_path, bucket, "v1/preprocess/preprocessor.joblib"
     )
     print("Preprocesador subido a MinIO exitosamente")
 

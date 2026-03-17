@@ -1,6 +1,3 @@
-# JupyterLab para desarrollo y experimentación.
-# Acceso: http://localhost:8889 (token en logs del contenedor).
-
 services:
   jupyterlab:
     build: ../model_training

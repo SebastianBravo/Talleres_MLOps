@@ -52,8 +52,10 @@ def get_minio_client():
 
 
 BUCKET = os.getenv("MINIO_BUCKET", "covertype-project")
-PREPROCESSOR_PREFIX = "preprocessor/"
-MODELS_PREFIX = "models/"
+V1_PREPROCESS_KEY = "v1/preprocess/preprocessor.joblib"
+V1_MODELS_PREFIX = "v1/models/"
+V2_PREPROCESS_PREFIX = "v2/preprocess/"
+V2_MODELS_PREFIX = "v2/models/"
 
 WILDERNESS_AREAS = ["Rawah", "Neota", "Comanche Peak", "Cache la Poudre"]
 SOIL_TYPES = [
@@ -68,7 +70,6 @@ SOIL_TYPES = [
 
 
 def bucket_exists(client=None) -> bool:
-    """Comprueba si el bucket de MinIO existe."""
     if client is None:
         client = get_minio_client()
     try:
@@ -78,11 +79,34 @@ def bucket_exists(client=None) -> bool:
         return False
 
 
-@lru_cache(maxsize=10)
-def load_preprocessor_for_model(model_name: str):
-    """Carga el preprocesador asociado al modelo (mismo nombre en preprocessor/{model_name}.joblib)."""
+@lru_cache(maxsize=1)
+def load_v1_preprocessor():
     client = get_minio_client()
-    key = f"{PREPROCESSOR_PREFIX}{model_name}.joblib"
+    buf = io.BytesIO()
+    client.download_fileobj(BUCKET, V1_PREPROCESS_KEY, buf)
+    buf.seek(0)
+    return joblib.load(buf)
+
+
+@lru_cache(maxsize=10)
+def load_v1_model(model_name: str):
+    client = get_minio_client()
+    key = f"{V1_MODELS_PREFIX}{model_name}.joblib"
+    buf = io.BytesIO()
+    try:
+        client.download_fileobj(BUCKET, key, buf)
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchKey":
+            raise FileNotFoundError
+        raise
+    buf.seek(0)
+    return joblib.load(buf)
+
+
+@lru_cache(maxsize=10)
+def load_v2_preprocessor_for_model(model_name: str):
+    client = get_minio_client()
+    key = f"{V2_PREPROCESS_PREFIX}{model_name}.joblib"
     buf = io.BytesIO()
     try:
         client.download_fileobj(BUCKET, key, buf)
@@ -95,9 +119,9 @@ def load_preprocessor_for_model(model_name: str):
 
 
 @lru_cache(maxsize=10)
-def load_model(model_name: str):
+def load_v2_model(model_name: str):
     client = get_minio_client()
-    key = f"{MODELS_PREFIX}{model_name}.joblib"
+    key = f"{V2_MODELS_PREFIX}{model_name}.joblib"
     buf = io.BytesIO()
     try:
         client.download_fileobj(BUCKET, key, buf)
@@ -134,9 +158,7 @@ class CoverTypeFeatures(BaseModel):
 
 
 class PredictionRequest(BaseModel):
-    """Petición de predicción: nombre del modelo en MinIO y una fila de características Covertype."""
-
-    model: str = Field(..., description="Nombre del modelo (sin .joblib). Ver GET /models")
+    model: str = Field(..., description="Nombre del modelo (sin .joblib). Ver GET /v1/models o GET /v2/models")
     data: CoverTypeFeatures
 
 
@@ -157,34 +179,35 @@ def preprocess_input(features: CoverTypeFeatures) -> pd.DataFrame:
     }])
 
 
-@app.get("/models", summary="Modelos disponibles")
-def list_models():
-    """
-    Lista los modelos disponibles en MinIO (bucket `models/`).
-    Si el bucket no existe o no hay objetos `.joblib`, devuelve lista vacía.
-    """
+def _list_models(prefix: str):
     client = get_minio_client()
     if not bucket_exists(client):
         return {"modelos_disponibles": []}
     try:
-        objs = client.list_objects_v2(Bucket=BUCKET, Prefix=MODELS_PREFIX)
+        objs = client.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
     except Exception:
         return {"modelos_disponibles": []}
     modelos = []
     for obj in objs.get("Contents") or []:
         key = obj["Key"]
         if key.endswith(".joblib"):
-            name = key.replace(MODELS_PREFIX, "").replace(".joblib", "")
+            name = key.replace(prefix, "").replace(".joblib", "")
             modelos.append(name)
     return {"modelos_disponibles": modelos}
 
 
-@app.post("/predict", summary="Predecir tipo de cubierta forestal")
-def predict(request: PredictionRequest):
-    """
-    Predice la clase de cubierta forestal (cover_type, 1-7) usando el modelo indicado
-    y las características del dataset Covertype. El modelo se descarga desde MinIO.
-    """
+@app.get("/v1/models", summary="Modelos v1", tags=["v1"])
+def list_v1_models():
+    return _list_models(V1_MODELS_PREFIX)
+
+
+@app.get("/v2/models", summary="Modelos v2", tags=["v2"])
+def list_v2_models():
+    return _list_models(V2_MODELS_PREFIX)
+
+
+@app.post("/v1/predict", summary="Predecir v1", tags=["v1"])
+def predict_v1(request: PredictionRequest):
     client = get_minio_client()
     if not bucket_exists(client):
         raise HTTPException(
@@ -193,12 +216,44 @@ def predict(request: PredictionRequest):
         )
     X = preprocess_input(request.data)
     try:
-        preprocessor = load_preprocessor_for_model(request.model)
+        preprocessor = load_v1_preprocessor()
         X_t = preprocessor.transform(X)
-    except FileNotFoundError as e:
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchBucket":
+            raise HTTPException(status_code=503, detail="Bucket de MinIO no disponible.")
+        raise HTTPException(status_code=503, detail=f"Error al cargar preprocesador: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error en preprocesador: {str(e)}")
+    try:
+        model = load_v1_model(request.model)
+    except FileNotFoundError:
         raise HTTPException(
             status_code=404,
-            detail=f"Preprocesador para el modelo '{request.model}' no encontrado. Guarde modelo y preprocesador con el mismo nombre en MinIO (preprocessor/).",
+            detail=f"Modelo '{request.model}' no existe. Use GET /v1/models para listar modelos.",
+        )
+    pred = model.predict(X_t)[0]
+    return {
+        "modelo_utilizado": request.model,
+        "prediccion_cover_type": int(pred),
+    }
+
+
+@app.post("/v2/predict", summary="Predecir v2", tags=["v2"])
+def predict_v2(request: PredictionRequest):
+    client = get_minio_client()
+    if not bucket_exists(client):
+        raise HTTPException(
+            status_code=503,
+            detail="Bucket de MinIO no disponible; no hay modelos para consumir.",
+        )
+    X = preprocess_input(request.data)
+    try:
+        preprocessor = load_v2_preprocessor_for_model(request.model)
+        X_t = preprocessor.transform(X)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Preprocesador para el modelo '{request.model}' no encontrado. Guarde modelo y preprocesador con el mismo nombre en MinIO (v2/preprocess/).",
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "NoSuchBucket":
@@ -207,11 +262,11 @@ def predict(request: PredictionRequest):
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error en preprocesador: {str(e)}")
     try:
-        model = load_model(request.model)
+        model = load_v2_model(request.model)
     except FileNotFoundError:
         raise HTTPException(
             status_code=404,
-            detail=f"Modelo '{request.model}' no existe. Use GET /models para listar modelos.",
+            detail=f"Modelo '{request.model}' no existe. Use GET /v2/models para listar modelos.",
         )
     pred = model.predict(X_t)[0]
     return {
