@@ -1,74 +1,104 @@
-# Proyecto 1 - MLOps: Pipeline de Datos con Airflow
+# Proyecto 1 - MLOps: Pipeline de Datos, Entrenamiento e Inferencia
 
-## Descripcion General
-
-Este proyecto implementa un pipeline automatizado de recoleccion, preprocesamiento y almacenamiento de datos del dataset **Covertype** utilizando **Apache Airflow** como orquestador. Los datos se obtienen a traves de una API externa que entrega la informacion en **10 batches**, cambiando cada 5 minutos. El DAG realiza ingesta incremental y, en cada iteracion con datos nuevos, ejecuta nuevamente el preprocesamiento y recarga la tabla limpia en **MySQL**. Cuando la API indica que ya se recolecto la muestra minima necesaria, el DAG se pausa automaticamente.
+![Python](https://img.shields.io/badge/Python-3.10-blue)
+![Airflow](https://img.shields.io/badge/Airflow-2.x-017CEE)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688)
+![MinIO](https://img.shields.io/badge/MinIO-S3--compatible-C72C48)
+![scikit-learn](https://img.shields.io/badge/scikit--learn-1.x-F7931E)
 
 ---
 
-## Estructura del Proyecto
+## Descripcion General
 
-```
-Proyecto_1/
-├── .env                          # Variables de entorno (credenciales, configuraciones)
-├── .env.example                  # Ejemplo de variables de entorno
-├── docker-compose.yaml           # Orquestacion de todos los servicios
-├── compose/                      # Compose dividido por servicio
-│   ├── airflow.yml
-│   ├── data_api.yml
-│   ├── inference_api.yml
-│   ├── jupyterlab.yml
-│   ├── minio.yml
-│   ├── model_training.yml
-│   ├── mysql.yml
-│   ├── postgres.yml
-│   └── redis.yml
-├── Airflow/
-│   ├── Dockerfile                # Imagen personalizada de Airflow
-│   ├── requirements.txt          # Dependencias de Python para Airflow
-│   ├── config/                   # Configuracion adicional de Airflow
-│   ├── dags/
-│   │   ├── data_dag.py           # DAG principal: recoleccion y preprocesamiento
-│   │   ├── db_utils.py           # Utilidades: conexion a MySQL, MinIO, API, preprocesamiento
-│   │   └── train_utils.py        # Utilidades para entrenamiento de modelos
-│   ├── logs/                     # Logs generados por las ejecuciones del DAG
-│   └── plugins/                  # Plugins personalizados de Airflow
-├── data-api/                     # API de datos (solo para pruebas locales)
-│   ├── main.py                   # Servidor FastAPI que sirve los datos por batches
-│   ├── generate_data.py          # Script para generar los datos del dataset
-│   ├── diagram.py                # Diagrama del flujo de la API
-│   ├── docker-compose.yaml       # Docker Compose de la API de pruebas
-│   ├── Dockerfile                # Imagen Docker de la API
-│   ├── requirements.txt          # Dependencias de la API
-│   └── data/
-│       ├── covertype.csv         # Dataset Covertype completo
-│       └── timestamps.json       # Control de timestamps para los batches
-├── inference_api/
-│   ├── api.py                    # Endpoints GET /models y POST /predict
-│   ├── Dockerfile
-│   └── requirements.txt
-└── model_training/
-    ├── train.ipynb               # Notebook principal de entrenamiento
-    ├── train2.ipynb              # Variantes/pruebas de entrenamiento
-    ├── Dockerfile
-    └── requirements.txt
-```
+Este proyecto implementa un pipeline completo de MLOps sobre el dataset **Covertype**: desde la ingesta de datos hasta la inferencia en produccion. El sistema soporta **dos flujos de entrenamiento** con distintas filosofias, ambos compartiendo la misma infraestructura de servicios y la misma API de inferencia.
+
+> **Requisitos de hardware recomendados:** minimo 8 GB de RAM y 10 GB de espacio en disco libre. El stack completo (Airflow + MySQL + MinIO + Redis + PostgreSQL + APIs) puede consumir 6-8 GB de RAM en ejecucion.
+
+---
+
+## Tabla de Contenidos
+
+1. [Arquitectura de Servicios](#arquitectura-de-servicios)
+2. [Flujos de Entrenamiento](#flujos-de-entrenamiento)
+3. [DAG: data_dag](#dag-data_dag)
+4. [Componentes en Detalle](#componentes-en-detalle)
+5. [Como Ejecutar el Proyecto](#como-ejecutar-el-proyecto)
+6. [Flujo Completo de Prueba](#flujo-completo-de-prueba)
+7. [Decisiones de Diseno](#decisiones-de-diseno)
+8. [Troubleshooting](#troubleshooting)
+9. [Dataset: Covertype](#dataset-covertype)
+10. [Tecnologias Utilizadas](#tecnologias-utilizadas)
 
 ---
 
 ## Arquitectura de Servicios
 
-| Servicio           | Descripcion                                                                                             | Puerto            |
-| ------------------ | ------------------------------------------------------------------------------------------------------- | ----------------- |
-| **Apache Airflow** | Orquestador de tareas. Ejecuta el DAG de recoleccion y preprocesamiento                                 | `8080`            |
-| **MySQL**          | Base de datos relacional. Almacena datos crudos (`covertype_raw`) y preprocesados (`covertype_cleaned`) | `3306`            |
-| **MinIO**          | Almacenamiento de objetos compatible con S3. Guarda el preprocesador (`preprocessor.joblib`)            | `19000` / `19001` |
-| **API de Datos**   | API FastAPI que simula la fuente externa de datos. **Solo para pruebas locales**                        | `8082`            |
-| **JupyterLab**     | Entorno interactivo general para exploracion y pruebas                                                  | `8889`            |
-| **Model Training** | Notebook de entrenamiento conectado a MySQL/MinIO (consume `covertype_cleaned`)                         | `8888`            |
-| **Inference API**  | API FastAPI de inferencia para listar modelos y predecir `cover_type`                                   | `8001`            |
+![Arquitectura general](docs/arquitectura_servicios_mlops_v2.svg)
 
-> **Nota:** El servicio `data-api` es unicamente para pruebas locales. En produccion, el DAG se conecta a la API externa del profesor en `http://10.43.101.94:8080`.
+| Servicio            | Descripcion                                                                                             |
+| ------------------- | ------------------------------------------------------------------------------------------------------- |
+| **Data API**        | FastAPI que simula la fuente externa de datos. Sirve el dataset Covertype en 10 batches cada 5 minutos |
+| **Apache Airflow**  | Orquestador. Ejecuta el DAG de ingesta y preprocesamiento                                               |
+| **MySQL**           | Almacena datos crudos (`covertype_raw`) y datos preprocesados (`covertype_cleaned`)                     |
+| **MinIO**           | Almacenamiento de objetos compatible con S3. Guarda preprocesadores y modelos entrenados                |
+| **Model Training**  | JupyterLab con acceso a MySQL y MinIO para ejecutar los notebooks de entrenamiento                      |
+| **Inference API**   | FastAPI que expone endpoints v1 y v2 para prediccion usando modelos almacenados en MinIO                |
+| **PostgreSQL**      | Base de datos interna de Airflow (metadatos, estado del DAG)                                            |
+| **Redis**           | Broker de mensajes para el Celery Executor de Airflow                                                   |
+
+---
+
+## Flujos de Entrenamiento
+
+![Comparativa V1 V2](docs/flujos_v1_vs_v2_v2.svg)
+
+El proyecto implementa dos flujos con filosofias distintas pero complementarias, diferenciados por la version (`v1` / `v2`) tanto en MinIO como en la API de inferencia.
+
+---
+
+### Flujo V1 — Preprocesamiento Estandarizado (train2.ipynb)
+
+```
+Data API → DAG → MySQL (raw + cleaned) → MinIO (v1/preprocess/) → train2.ipynb → MinIO (v1/models/) → Inference API /v1/*
+```
+
+**Como funciona:**
+
+1. El DAG recolecta todos los batches de la Data API y los guarda en `covertype_raw` (datos crudos).
+2. Una vez completa la ingesta, el DAG ejecuta el preprocesamiento: limpieza, escalado, one-hot encoding, y divide los datos en train/test (80/20). El resultado se guarda en `covertype_cleaned` y el preprocesador entrenado se sube a MinIO en `v1/preprocess/preprocessor.joblib`.
+3. El notebook `train2.ipynb` asume que estas tablas y el preprocesador ya existen. Lee los datos directamente desde `covertype_cleaned` (ya transformados) y descarga el preprocesador desde MinIO para asegurar consistencia con el pipeline de produccion.
+4. El modelo entrenado se sube a MinIO en `v1/models/{nombre_modelo}.joblib`.
+5. La Inference API expone `/v1/predict`: usa siempre el mismo preprocesador del DAG (`v1/preprocess/preprocessor.joblib`) y el modelo solicitado desde `v1/models/`.
+
+**Ventajas:**
+- **Consistencia garantizada**: el mismo preprocesador que transformo los datos de entrenamiento es el que se usa en produccion. No hay riesgo de divergencia entre entrenamiento e inferencia.
+- **Eficiencia**: los datos ya estan preprocesados en MySQL; el notebook solo entrena, sin repetir el preprocesamiento.
+- **Estandarizacion del pipeline**: todos los modelos v1 comparten un unico preprocesador, facilitando comparacion justa entre modelos.
+- **Reproducibilidad**: cualquier cientifico de datos que ejecute `train2.ipynb` obtiene exactamente el mismo punto de partida.
+- **Menor tiempo de experimentacion**: se puede entrenar y comparar multiples modelos sin volver a procesar los datos.
+
+---
+
+### Flujo V2 — Preprocesamiento Flexible por Modelo (train.ipynb)
+
+```
+Data API → DAG → MySQL (raw) → train.ipynb → MinIO (v2/preprocess/ + v2/models/) → Inference API /v2/*
+```
+
+**Como funciona:**
+
+1. El DAG recolecta los batches y guarda los datos crudos en `covertype_raw`. No es necesario esperar al preprocesamiento del DAG.
+2. El notebook `train.ipynb` lee directamente desde `covertype_raw`, construye su propio pipeline de preprocesamiento (puede variar segun el modelo o experimento) y lo ajusta con los datos de entrenamiento.
+3. Tanto el modelo como su preprocesador se suben a MinIO bajo el mismo nombre: `v2/models/{nombre}.joblib` y `v2/preprocess/{nombre}.joblib`.
+4. La Inference API expone `/v2/predict`: carga el preprocesador y el modelo por nombre, de modo que cada modelo tiene su propio preprocesamiento asociado.
+
+**Ventajas:**
+- **Flexibilidad total**: el cientifico de datos puede experimentar con diferentes estrategias de preprocesamiento (distintas features, distintos escaladores, distintos encoders) sin afectar otros modelos.
+- **Autonomia del notebook**: no depende del estado del DAG ni de la tabla `covertype_cleaned`; basta con tener datos crudos.
+- **Experimentacion rapida**: ideal para iterar sobre hipotesis de preprocesamiento y ver su impacto en el rendimiento del modelo.
+- **Modelos autosuficientes**: cada modelo v2 lleva su propio preprocesador, lo que facilita el versionado y el despliegue independiente de cada experimento.
+- **Adaptabilidad**: permite ajustar el preprocesamiento a las particularidades de cada algoritmo (por ejemplo, SVM vs Random Forest pueden beneficiarse de distintos escalados).
 
 ---
 
@@ -196,25 +226,20 @@ El paso de preprocesamiento realiza:
 
 > Captura de `http://localhost:8001/docs` mostrando los endpoints disponibles (`GET /models` y `POST /predict`).
 
-<!-- ![Swagger inference](img/inference/01_swagger_endpoints.png) -->
+![Swagger inference](img/inference/01_swagger_endpoints.png)
 
 ### 2. Listado de Modelos Disponibles
 
 > Captura de la respuesta de `GET /models`, evidenciando que la API consulta MinIO y lista modelos para seleccionar.
 
-<!-- ![List models](img/inference/02_get_models.png) -->
+![List models](img/inference/02_get_models.png)
 
-### 3. Seleccion de Modelo en Prediccion
 
-> Captura de `POST /predict` en Swagger donde se elige el campo `model` (por ejemplo `random_forest_v1`) y se envian las features de entrada.
-
-<!-- ![Select model](img/inference/03_select_model_predict.png) -->
-
-### 4. Respuesta de Prediccion
+### 3. Respuesta de Prediccion
 
 > Captura de la respuesta exitosa de `POST /predict`, mostrando `modelo_utilizado` y `prediccion_cover_type`.
 
-<!-- ![Predict response](img/inference/04_predict_response.png) -->
+![Select model](img/inference/03_select_model_predict.png)
 
 ---
 
@@ -230,25 +255,146 @@ El paso de preprocesamiento realiza:
 
 > Captura de celdas donde se entrenan modelos (ej. Random Forest, XGBoost u otros definidos en el notebook) y se reportan metricas.
 
-<!-- ![Train models](img/training/02_train_models_metrics.png) -->
+![Train models](img/training/02_train_models_metrics.png)
 
 ### 3. Serializacion de Modelo y Preprocesador
 
-> Captura de celdas donde se generan artefactos `.joblib` del modelo y del preprocesador con el mismo nombre base.
+> Captura de celdas donde se generan artefactos `.joblib` del modelo.
 
-<!-- ![Serialize artifacts](img/training/03_serialize_joblib.png) -->
+![Serialize artifacts](img/training/03_serialize_joblib.png)
 
 ### 4. Carga de Artefactos en MinIO
 
-> Captura de celdas/subidas mostrando almacenamiento en `models/<nombre>.joblib` y `preprocessor/<nombre>.joblib` dentro del bucket `covertype-project`.
+> Captura de celdas/subidas mostrando almacenamiento en `models/<nombre>.joblib`  dentro del bucket `covertype-project`.
 
-<!-- ![Upload to minio](img/training/04_upload_minio.png) -->
+![Minio artifacts](img/training/05_minio_console_artifacts.png)
 
 ### 5. Verificacion en MinIO Console
 
 > Captura de `http://localhost:19001` mostrando ambos artefactos disponibles para consumo desde `inference_api`.
 
-<!-- ![Minio artifacts](img/training/05_minio_console_artifacts.png) -->
+
+![Upload to minio](img/training/04_upload_minio.png)
+
+---
+
+## Componentes en Detalle
+
+### 1. Data API
+
+FastAPI que simula la fuente externa de datos del dataset Covertype. Sirve los datos divididos en **10 batches**, rotando cada 5 minutos. El DAG consulta esta API en cada ejecucion para obtener el batch disponible en ese momento.
+
+- En pruebas locales: `http://localhost:8082`
+- En produccion: API externa del profesor en `http://10.43.101.94:8080`
+
+---
+
+### 2. MySQL
+
+Almacena dos tablas principales:
+
+| Tabla               | Contenido                                                                |
+| ------------------- | ------------------------------------------------------------------------ |
+| `covertype_raw`     | Datos originales tal como llegan de la API, sin transformaciones         |
+| `covertype_cleaned` | Datos preprocesados por el DAG, con columna `dataset` (`train` / `test`) |
+
+---
+
+### 3. Notebooks de Entrenamiento
+
+Accesibles desde el servicio **Model Training** en `http://localhost:8888`.
+
+#### `train2.ipynb` — Flujo V1
+
+- Lee datos desde `covertype_cleaned` (ya preprocesados)
+- Descarga el preprocesador desde `v1/preprocess/preprocessor.joblib` en MinIO
+- Extrae un conjunto de validacion desde el train para ajuste de hiperparametros
+- Soporta SVM, Logistic Regression y Random Forest
+- Sube el modelo entrenado a `v1/models/{nombre}.joblib` en MinIO
+
+#### `train.ipynb` — Flujo V2
+
+- Lee datos crudos desde `covertype_raw`
+- Construye y ajusta su propio pipeline de preprocesamiento
+- Divide en train/val/test
+- Soporta SVM, Logistic Regression y Random Forest
+- Sube el modelo a `v2/models/{nombre}.joblib` y el preprocesador a `v2/preprocess/{nombre}.joblib` en MinIO
+
+---
+
+### 4. MinIO
+
+Almacenamiento de objetos compatible con S3. Organizado por version:
+
+```
+covertype-project/
+├── v1/
+│   ├── preprocess/
+│   │   └── preprocessor.joblib       # Preprocesador unico del DAG (Flujo V1)
+│   └── models/
+│       ├── svm_v1.joblib
+│       └── ...
+└── v2/
+    ├── preprocess/
+    │   ├── logistic_regression_v2.joblib
+    │   └── ...                       # Un preprocesador por modelo (Flujo V2)
+    └── models/
+        ├── logistic_regression_v2.joblib
+        └── ...
+```
+
+Consola web disponible en `http://localhost:9001`.
+
+---
+
+### 5. Inference API
+
+FastAPI disponible en `http://localhost:8001`. Documentacion interactiva en `http://localhost:8001/docs`.
+
+#### Endpoints V1 — Preprocesador compartido del DAG
+
+| Metodo | Endpoint      | Descripcion                                                                            |
+| ------ | ------------- | -------------------------------------------------------------------------------------- |
+| `GET`  | `/v1/models`  | Lista todos los modelos disponibles en `v1/models/` de MinIO                           |
+| `POST` | `/v1/predict` | Realiza una prediccion usando el preprocesador del DAG y el modelo indicado en el body |
+
+#### Endpoints V2 — Preprocesador por modelo
+
+| Metodo | Endpoint      | Descripcion                                                                                            |
+| ------ | ------------- | ------------------------------------------------------------------------------------------------------ |
+| `GET`  | `/v2/models`  | Lista todos los modelos disponibles en `v2/models/` de MinIO                                           |
+| `POST` | `/v2/predict` | Realiza una prediccion cargando el preprocesador especifico del modelo desde `v2/preprocess/` en MinIO |
+
+#### Formato de Request para `/v1/predict` y `/v2/predict`
+
+```json
+{
+  "model": "svm_v1",
+  "data": {
+    "elevation": 2596,
+    "aspect": 51,
+    "slope": 3,
+    "horizontal_distance_to_hydrology": 258,
+    "vertical_distance_to_hydrology": 0,
+    "horizontal_distance_to_roadways": 510,
+    "hillshade_9am": 221,
+    "hillshade_noon": 232,
+    "hillshade_3pm": 148,
+    "horizontal_distance_to_fire_points": 6279,
+    "wilderness_area": "Rawah",
+    "soil_type": "C2702"
+  }
+}
+```
+
+#### Formato de Response
+
+```json
+{
+  "modelo_utilizado": "svm_v1",
+  "prediccion_cover_type": 5
+}
+```
 
 ---
 
@@ -257,23 +403,19 @@ El paso de preprocesamiento realiza:
 ### Prerrequisitos
 
 - [Docker](https://docs.docker.com/get-docker/) y [Docker Compose](https://docs.docker.com/compose/install/) instalados
-- Puerto `8080` (Airflow), `3306` (MySQL), `19000`/`19001` (MinIO) disponibles
+- Minimo **8 GB de RAM** disponibles y **10 GB de disco**
+- Puertos libres: `8080` (Airflow), `3306` (MySQL), `9000`/`9001` (MinIO), `8001` (Inference API), `8888` (Model Training), `8889` (JupyterLab), `8082` (Data API)
 
 ### 1. Configurar Variables de Entorno
-
-Copiar el archivo de ejemplo y completar con los valores correspondientes:
 
 ```bash
 cp .env.example .env
 ```
 
-Editar el archivo `.env` con las credenciales y configuraciones necesarias:
+Editar `.env` con las credenciales correspondientes:
 
 ```env
 # MySQL
-AIRFLOW_UID=50000
-AIRFLOW_PROJ_DIR=../Airflow
-
 MYSQL_HOST=mysql_db
 MYSQL_USER=airflow
 MYSQL_PASSWORD=airflow
@@ -281,117 +423,260 @@ MYSQL_DATABASE=covertype_data
 
 # MinIO
 MINIO_ENDPOINT=http://minio:9000
+MINIO_BUCKET=covertype-project
 AWS_ACCESS_KEY_ID=<tu_access_key>
 AWS_SECRET_ACCESS_KEY=<tu_secret_key>
 AWS_DEFAULT_REGION=us-east-1
 
 # API de Datos
-API_URL=http://api-data:80          # Para pruebas locales (red docker)
+API_URL=http://api-data:8082        # Para pruebas locales
 # API_URL=http://10.43.101.94:8080  # Para la API del profesor
 API_GROUP_NUMBER=<tu_numero_de_grupo>
 ```
 
-### 2. Construir y Levantar los Servicios
+### 2. Levantar Todo el Proyecto
 
 ```bash
 cd Proyecto_1
-docker compose up --build -d
+docker compose up --build
 ```
 
-### 3. (Opcional) Levantar la API de Datos para Pruebas Locales
+Este unico comando levanta todos los servicios: infraestructura (MinIO, MySQL, PostgreSQL, Redis), Airflow, la API de datos, JupyterLab, el entorno de entrenamiento y la API de inferencia.
 
-Si se desea probar con la API de datos local en lugar de la API del profesor:
+### 3. Acceder a los Servicios
 
-```bash
-cd data-api
-docker compose up --build -d
-```
-
-### 4. Acceder a los Servicios
-
-| Servicio          | URL                                              | Credenciales           |
-| ----------------- | ------------------------------------------------ | ---------------------- |
-| **Airflow**       | [http://localhost:8080](http://localhost:8080)   | `airflow` / `airflow`  |
-| **MinIO Console** | [http://localhost:19001](http://localhost:19001) | Configuradas en `.env` |
-
-### 5. Activar el DAG
-
-1. Abrir la interfaz web de Airflow en `http://localhost:8080`
-2. Buscar el DAG `data_dag`
-3. Activar el toggle para habilitar el DAG (despausar)
-4. El DAG comenzara a ejecutarse automaticamente segun el intervalo configurado
-
-### 6. Monitorear la Ejecucion
-
-- En la vista de **Grid** o **Graph** del DAG se puede observar el progreso de cada ejecucion
-- En cada corrida con datos nuevos, `preprocess_data` debe quedar en **success**
-- `check_should_pause` y `pause_dag` solo deben ejecutarse cuando la API indique fin de recoleccion
-- Una vez ejecutado `pause_dag`, el DAG quedara pausado automaticamente
+| Servicio               | URL                        | Credenciales           |
+| ---------------------- | -------------------------- | ---------------------- |
+| **Airflow**            | http://localhost:8080      | `airflow` / `airflow`  |
+| **MinIO Console**      | http://localhost:9001      | Configuradas en `.env` |
+| **Inference API**      | http://localhost:8001      | —                      |
+| **Inference API Docs** | http://localhost:8001/docs | —                      |
+| **Model Training**     | http://localhost:8888      | —                      |
+| **JupyterLab**         | http://localhost:8889      | —                      |
+| **Data API**           | http://localhost:8082      | —                      |
 
 ---
 
-## Componentes de Entrenamiento e Inferencia
+## Flujo Completo de Prueba
 
-### `model_training`
+Guia paso a paso para validar el sistema de extremo a extremo:
 
-Servicio para entrenar modelos desde JupyterLab en `http://localhost:8888`.
+**Paso 1 — Levantar los servicios**
+```bash
+cd Proyecto_1
+docker compose up --build
+```
+Esperar hasta que Airflow este disponible en `http://localhost:8080` (puede tardar 2-3 minutos en el primer arranque).
 
-- Fuente de datos esperada: tabla limpia `covertype_cleaned` en MySQL
-- Dependencias principales: `mysql_db` y `minio`
-- Artefactos de salida: modelos en `models/` y preprocesadores en `preprocessor/` dentro del bucket `covertype-project`
-- Punto clave del flujo: el entrenamiento importante es el que consume exclusivamente datos ya limpios desde `covertype_cleaned`
+**Paso 2 — Activar el DAG**
 
-### `inference_api`
+Ingresar a `http://localhost:8080` con `airflow` / `airflow`, buscar el DAG `data_dag` y activarlo. El DAG comenzara a recolectar batches cada 5 minutos. El preprocesamiento se ejecutara automaticamente al completar los 10 batches (~50 minutos en total).
 
-API FastAPI de inferencia en `http://localhost:8001`.
+**Paso 3 — Entrenar un modelo (Flujo V1)**
 
-- Endpoint `GET /models`: lista modelos disponibles en MinIO
-- Endpoint `POST /predict`: carga modelo y preprocesador por nombre, transforma entrada y retorna `cover_type` predicho
-- Requisito operativo: para cada modelo `X`, debe existir `models/X.joblib` y `preprocessor/X.joblib`
-- Dependencia principal: MinIO (`covertype-project`)
+Abrir `http://localhost:8888`, navegar a `train2.ipynb` y ejecutar todas las celdas. El modelo entrenado quedara disponible en MinIO bajo `v1/models/`.
 
-### Detener los Servicios
+**Paso 4 — Verificar modelos disponibles**
+```bash
+curl http://localhost:8001/v1/models
+```
 
+**Paso 5 — Realizar una prediccion**
+```bash
+curl -X POST http://localhost:8001/v1/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "svm_v1",
+    "data": {
+      "elevation": 2596,
+      "aspect": 51,
+      "slope": 3,
+      "horizontal_distance_to_hydrology": 258,
+      "vertical_distance_to_hydrology": 0,
+      "horizontal_distance_to_roadways": 510,
+      "hillshade_9am": 221,
+      "hillshade_noon": 232,
+      "hillshade_3pm": 148,
+      "horizontal_distance_to_fire_points": 6279,
+      "wilderness_area": "Rawah",
+      "soil_type": "C2702"
+    }
+  }'
+```
+
+Respuesta esperada:
+```json
+{
+  "modelo_utilizado": "svm_v1",
+  "prediccion_cover_type": 5
+}
+```
+
+Para probar el **Flujo V2**, repetir los pasos 3-5 usando `train.ipynb` y el endpoint `/v2/predict`.
+
+---
+
+## Decisiones de Diseno
+
+**Por que dos flujos de entrenamiento en lugar de uno?**
+El Flujo V1 prioriza la consistencia y la reproducibilidad: un unico preprocesador compartido garantiza que todos los modelos se comparen en igualdad de condiciones y que no haya divergencia entre entrenamiento e inferencia. El Flujo V2 prioriza la experimentacion: permite al cientifico de datos iterar libremente sobre el preprocesamiento sin afectar otros modelos ni depender del estado del DAG. Ambos flujos coexisten porque responden a necesidades distintas en el ciclo de vida de un proyecto ML real: produccion estable (V1) vs exploracion de hipotesis (V2).
+
+**Por que MinIO en lugar de guardar modelos en disco?**
+MinIO proporciona una interfaz compatible con S3, lo que permite que multiples servicios (notebooks de entrenamiento y API de inferencia) accedan a los mismos artefactos de forma independiente del sistema de archivos del contenedor. Esto desacopla el entrenamiento de la inferencia: ambos pueden correr en contenedores distintos sin montar volumenes compartidos, y los modelos persisten aunque los contenedores se reinicien.
+
+**Por que Celery Executor en Airflow?**
+El Celery Executor permite ejecutar tareas del DAG en workers separados del scheduler, lo que hace el sistema mas robusto y escalable. Con el LocalExecutor, una tarea que falla o tarda mucho puede bloquear al scheduler. Redis actua como broker de mensajes entre el scheduler y los workers, siguiendo el patron estandar de produccion de Airflow.
+
+**Por que dividir el docker-compose en multiples archivos?**
+La directiva `include` permite mantener la configuracion de cada servicio en su propio archivo dentro de `compose/`, facilitando la lectura, el mantenimiento y la depuracion de servicios individuales. Al mismo tiempo, `docker compose up` en la raiz sigue levantando todo el stack con un solo comando.
+
+---
+
+## Troubleshooting
+
+### Airflow no levanta o queda en estado "restarting"
+
+El problema mas comun son los permisos del directorio de logs. Ejecutar:
+
+```bash
+mkdir -p Airflow/logs
+chmod -R 777 Airflow/logs
+```
+
+Luego reiniciar:
 ```bash
 docker compose down
+docker compose up --build
 ```
 
-Para eliminar tambien los volumenes (datos persistentes):
+### Los contenedores se matan solos (OOM Killer)
+
+El sistema no tiene suficiente RAM disponible. Verificar con `docker stats`. Soluciones posibles: cerrar otras aplicaciones, aumentar la memoria asignada a Docker en Docker Desktop (Settings → Resources → Memory), o ejecutar solo los servicios necesarios:
 
 ```bash
-docker compose down -v
+docker compose up airflow-webserver airflow-scheduler mysql minio redis postgres
 ```
+
+### MinIO ya tiene datos de una ejecucion anterior y hay conflictos
+
+Para limpiar el estado completamente:
+```bash
+docker compose down -v   # elimina tambien los volumenes
+docker compose up --build
+```
+
+> **Atencion**: esto borrara todos los modelos y datos almacenados. Hacer backup si es necesario.
+
+### El DAG no aparece en la UI de Airflow
+
+Verificar que el archivo `data_dag.py` este en `Airflow/dags/` y que no tenga errores de sintaxis:
+```bash
+docker exec -it <airflow_scheduler_container> airflow dags list
+docker exec -it <airflow_scheduler_container> airflow dags test data_dag
+```
+
+### La Inference API responde 404 al hacer predict
+
+El modelo solicitado no existe en MinIO. Verificar primero los modelos disponibles:
+```bash
+curl http://localhost:8001/v1/models
+curl http://localhost:8001/v2/models
+```
+Si la lista esta vacia, ejecutar el notebook de entrenamiento correspondiente.
+
+### Puerto ya en uso al levantar docker compose
+
+Identificar que proceso usa el puerto y detenerlo, o cambiar el puerto en el archivo `.env` o en el `compose/` correspondiente:
+```bash
+# En Linux/Mac
+lsof -i :<puerto>
+kill -9 <PID>
+```
+
+---
+
+## Estructura del Proyecto
+
+```
+Proyecto_1/
+├── .env                              # Variables de entorno (credenciales, configuraciones)
+├── docker-compose.yaml               # Orquestacion unificada de todos los servicios
+├── compose/                          # Compose dividido por servicio (para legibilidad)
+│   ├── airflow.yml                   # Airflow: webserver, scheduler, worker, triggerer, init
+│   ├── data_api.yml                  # API de datos Covertype (pruebas locales)
+│   ├── inference_api.yml             # API de inferencia (v1 y v2)
+│   ├── jupyterlab.yml                # JupyterLab generico
+│   ├── minio.yml                     # MinIO: almacenamiento de objetos S3
+│   ├── model_training.yml            # JupyterLab para entrenamiento (acceso a MySQL y MinIO)
+│   ├── mysql.yml                     # MySQL: base de datos de datos Covertype
+│   ├── postgres.yml                  # PostgreSQL: metadatos internos de Airflow
+│   └── redis.yml                     # Redis: broker Celery para Airflow
+├── Airflow/
+│   ├── Dockerfile                    # Imagen personalizada de Airflow
+│   ├── requirements.txt              # Dependencias de Python para Airflow
+│   ├── dags/
+│   │   ├── data_dag.py               # DAG principal: ingesta, preprocesamiento y almacenamiento
+│   │   ├── db_utils.py               # Utilidades: MySQL, MinIO, API, preprocesamiento
+│   │   └── train_utils.py            # Utilidades para entrenamiento
+│   ├── logs/                         # Logs de ejecuciones del DAG
+│   └── plugins/                      # Plugins personalizados de Airflow
+├── data-api/
+│   ├── main.py                       # Servidor FastAPI que sirve datos por batches
+│   ├── generate_data.py              # Script generador del dataset
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── data/
+│       ├── covertype.csv             # Dataset Covertype completo
+│       └── timestamps.json           # Control de timestamps para los batches
+├── model_training/
+│   ├── train.ipynb                   # Flujo V2: preprocesamiento propio por modelo
+│   └── train2.ipynb                  # Flujo V1: usa preprocesador del DAG desde MinIO
+├── inference_api/
+│   ├── api.py                        # API FastAPI de inferencia (endpoints v1 y v2)
+│   └── requirements.txt
+└── docs/
+    ├── arquitectura_servicios_mlops_v2.svg
+    ├── dag_airflow_flujo_v2.svg
+    └── flujos_v1_vs_v2_v2.svg
+```
+
+> El `docker-compose.yaml` en la raiz usa la directiva `include` para incorporar todos los archivos en `compose/`. Esto divide la configuracion por responsabilidad sin perder la posibilidad de levantar todo con un solo comando.
 
 ---
 
 ## Dataset: Covertype
 
-El dataset **Forest Covertype** contiene informacion cartografica utilizada para predecir el tipo de cobertura forestal. Incluye las siguientes caracteristicas:
+El dataset **Forest Covertype** contiene informacion cartografica para predecir el tipo de cobertura forestal (clases 1 a 7).
 
-| Caracteristica                       | Tipo       | Descripcion                                          |
-| ------------------------------------ | ---------- | ---------------------------------------------------- |
-| `elevation`                          | Numerica   | Elevacion en metros                                  |
-| `aspect`                             | Numerica   | Aspecto en grados azimut                             |
-| `slope`                              | Numerica   | Pendiente en grados                                  |
-| `horizontal_distance_to_hydrology`   | Numerica   | Distancia horizontal a la fuente de agua mas cercana |
-| `vertical_distance_to_hydrology`     | Numerica   | Distancia vertical a la fuente de agua mas cercana   |
-| `horizontal_distance_to_roadways`    | Numerica   | Distancia horizontal al camino mas cercano           |
-| `hillshade_9am`                      | Numerica   | Indice de sombra a las 9am (0-255)                   |
-| `hillshade_noon`                     | Numerica   | Indice de sombra al mediodia (0-255)                 |
-| `hillshade_3pm`                      | Numerica   | Indice de sombra a las 3pm (0-255)                   |
-| `horizontal_distance_to_fire_points` | Numerica   | Distancia horizontal al punto de fuego mas cercano   |
-| `wilderness_area`                    | Categorica | Area silvestre designada                             |
-| `soil_type`                          | Categorica | Tipo de suelo                                        |
-| `cover_type`                         | Objetivo   | Tipo de cobertura forestal (1-7)                     |
+| Caracteristica                       | Tipo       | Descripcion                                                  |
+| ------------------------------------ | ---------- | ------------------------------------------------------------ |
+| `elevation`                          | Numerica   | Elevacion en metros                                          |
+| `aspect`                             | Numerica   | Aspecto en grados azimut                                     |
+| `slope`                              | Numerica   | Pendiente en grados                                          |
+| `horizontal_distance_to_hydrology`   | Numerica   | Distancia horizontal a la fuente de agua mas cercana         |
+| `vertical_distance_to_hydrology`     | Numerica   | Distancia vertical a la fuente de agua mas cercana           |
+| `horizontal_distance_to_roadways`    | Numerica   | Distancia horizontal al camino mas cercano                   |
+| `hillshade_9am`                      | Numerica   | Indice de sombra a las 9am (0-255)                           |
+| `hillshade_noon`                     | Numerica   | Indice de sombra al mediodia (0-255)                         |
+| `hillshade_3pm`                      | Numerica   | Indice de sombra a las 3pm (0-255)                           |
+| `horizontal_distance_to_fire_points` | Numerica   | Distancia horizontal al punto de fuego mas cercano           |
+| `wilderness_area`                    | Categorica | Area silvestre: Rawah, Neota, Comanche Peak, Cache la Poudre |
+| `soil_type`                          | Categorica | Tipo de suelo (ej. C2702, C3501, ...)                        |
+| `cover_type`                         | Objetivo   | Tipo de cobertura forestal (1-7)                             |
 
 ---
 
 ## Tecnologias Utilizadas
 
-- **Apache Airflow** - Orquestacion de pipelines
-- **MySQL** - Almacenamiento de datos estructurados
-- **MinIO** - Almacenamiento de objetos (artefactos ML)
-- **Docker y Docker Compose** - Contenedorizacion y orquestacion de servicios
-- **scikit-learn** - Preprocesamiento de datos (StandardScaler, OneHotEncoder, SimpleImputer)
-- **FastAPI** - API de datos (pruebas locales)
-- **Python** - Lenguaje principal
+| Tecnologia              | Rol en el proyecto                        |
+| ----------------------- | ----------------------------------------- |
+| **Apache Airflow**      | Orquestacion de pipelines                 |
+| **MySQL**               | Almacenamiento de datos estructurados     |
+| **MinIO**               | Almacenamiento de artefactos ML           |
+| **FastAPI**             | API de datos y API de inferencia          |
+| **JupyterLab**          | Entorno interactivo de entrenamiento      |
+| **scikit-learn**        | Preprocesamiento y modelos ML             |
+| **Docker/Compose**      | Contenedorizacion y orquestacion          |
+| **PostgreSQL**          | Metadatos internos de Airflow             |
+| **Redis**               | Broker Celery para workers de Airflow     |
+| **Python 3.10**         | Lenguaje principal                        |

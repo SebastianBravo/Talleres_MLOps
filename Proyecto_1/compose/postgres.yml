@@ -1,5 +1,3 @@
-# PostgreSQL: metadatos de Airflow (DAGs, ejecuciones, etc.).
-
 services:
   postgres:
     image: postgres:13
