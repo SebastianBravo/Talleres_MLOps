@@ -1,0 +1,21 @@
+# JupyterLab para desarrollo y experimentación.
+# Acceso: http://localhost:8889 (token en logs del contenedor).
+
+services:
+  jupyterlab:
+    build: ../model_training
+    ports:
+      - "8889:8888"
+    volumes:
+      - ../model_training:/workspace
+    environment:
+      MYSQL_HOST: mysql_db
+      MYSQL_USER: airflow
+      MYSQL_PASSWORD: airflow
+      MYSQL_DATABASE: covertype_data
+      MINIO_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
+      MINIO_BUCKET: covertype-project
+    restart: unless-stopped
