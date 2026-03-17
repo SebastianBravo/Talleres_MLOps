@@ -196,17 +196,17 @@ def _list_models(prefix: str):
     return {"modelos_disponibles": modelos}
 
 
-@app.get("/v1/models", summary="Modelos v1", tags=["v1"])
+@app.get("/v1/models", summary="Modelos v1", tags=["Preprocesamiento Con Dag"])
 def list_v1_models():
     return _list_models(V1_MODELS_PREFIX)
 
 
-@app.get("/v2/models", summary="Modelos v2", tags=["v2"])
+@app.get("/v2/models", summary="Modelos v2", tags=["Preprocesamiento Dinamico en notebook"])
 def list_v2_models():
     return _list_models(V2_MODELS_PREFIX)
 
 
-@app.post("/v1/predict", summary="Predecir v1", tags=["v1"])
+@app.post("/v1/predict", summary="Predecir v1", tags=["Preprocesamiento Con Dag"])
 def predict_v1(request: PredictionRequest):
     client = get_minio_client()
     if not bucket_exists(client):
@@ -238,7 +238,7 @@ def predict_v1(request: PredictionRequest):
     }
 
 
-@app.post("/v2/predict", summary="Predecir v2", tags=["v2"])
+@app.post("/v2/predict", summary="Predecir v2", tags=["Preprocesamiento Dinamico en notebook"])
 def predict_v2(request: PredictionRequest):
     client = get_minio_client()
     if not bucket_exists(client):

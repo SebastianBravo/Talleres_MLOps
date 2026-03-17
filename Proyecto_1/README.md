@@ -226,25 +226,20 @@ El paso de preprocesamiento realiza:
 
 > Captura de `http://localhost:8001/docs` mostrando los endpoints disponibles (`GET /models` y `POST /predict`).
 
-<!-- ![Swagger inference](img/inference/01_swagger_endpoints.png) -->
+![Swagger inference](img/inference/01_swagger_endpoints.png)
 
 ### 2. Listado de Modelos Disponibles
 
 > Captura de la respuesta de `GET /models`, evidenciando que la API consulta MinIO y lista modelos para seleccionar.
 
-<!-- ![List models](img/inference/02_get_models.png) -->
+![List models](img/inference/02_get_models.png)
 
-### 3. Seleccion de Modelo en Prediccion
 
-> Captura de `POST /predict` en Swagger donde se elige el campo `model` (por ejemplo `random_forest_v1`) y se envian las features de entrada.
-
-<!-- ![Select model](img/inference/03_select_model_predict.png) -->
-
-### 4. Respuesta de Prediccion
+### 3. Respuesta de Prediccion
 
 > Captura de la respuesta exitosa de `POST /predict`, mostrando `modelo_utilizado` y `prediccion_cover_type`.
 
-<!-- ![Predict response](img/inference/04_predict_response.png) -->
+![Select model](img/inference/03_select_model_predict.png)
 
 ---
 
@@ -260,25 +255,26 @@ El paso de preprocesamiento realiza:
 
 > Captura de celdas donde se entrenan modelos (ej. Random Forest, XGBoost u otros definidos en el notebook) y se reportan metricas.
 
-<!-- ![Train models](img/training/02_train_models_metrics.png) -->
+![Train models](img/training/02_train_models_metrics.png)
 
 ### 3. Serializacion de Modelo y Preprocesador
 
-> Captura de celdas donde se generan artefactos `.joblib` del modelo y del preprocesador con el mismo nombre base.
+> Captura de celdas donde se generan artefactos `.joblib` del modelo.
 
-<!-- ![Serialize artifacts](img/training/03_serialize_joblib.png) -->
+![Serialize artifacts](img/training/03_serialize_joblib.png)
 
 ### 4. Carga de Artefactos en MinIO
 
-> Captura de celdas/subidas mostrando almacenamiento en `models/<nombre>.joblib` y `preprocessor/<nombre>.joblib` dentro del bucket `covertype-project`.
+> Captura de celdas/subidas mostrando almacenamiento en `models/<nombre>.joblib`  dentro del bucket `covertype-project`.
 
-<!-- ![Upload to minio](img/training/04_upload_minio.png) -->
+![Minio artifacts](img/training/05_minio_console_artifacts.png)
 
 ### 5. Verificacion en MinIO Console
 
 > Captura de `http://localhost:19001` mostrando ambos artefactos disponibles para consumo desde `inference_api`.
 
-<!-- ![Minio artifacts](img/training/05_minio_console_artifacts.png) -->
+
+![Upload to minio](img/training/04_upload_minio.png)
 
 ---
 
