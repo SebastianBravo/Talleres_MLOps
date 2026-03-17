@@ -104,29 +104,181 @@ Data API → DAG → MySQL (raw) → train.ipynb → MinIO (v2/preprocess/ + v2/
 
 ## DAG: `data_dag`
 
-![Flujo del DAG](docs/dag_airflow_flujo_v2.svg)
+### Descripcion
 
-Orquestado por Airflow, se ejecuta cada 5 minutos y sigue este flujo:
+El DAG `data_dag` se ejecuta automaticamente cada **5 minutos** (configurable a 20 segundos para pruebas) y realiza las siguientes tareas:
+
+### Flujo de Tareas
 
 ```
-create_tables → load_raw_data → check_should_preprocess → preprocess_data → pause_dag
+create_tables -> load_raw_data
+load_raw_data -> check_should_preprocess -> preprocess_data
+load_raw_data -> check_should_pause -> pause_dag
 ```
 
-| Tarea                     | Descripcion                                                                                                                                   |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create_tables`           | Crea las tablas `covertype_raw` y `covertype_cleaned` en MySQL si no existen                                                                  |
-| `load_raw_data`           | Consulta la Data API, obtiene el batch actual e inserta los datos en `covertype_raw`                                                          |
-| `check_should_preprocess` | **ShortCircuitOperator**: solo continua cuando se han recolectado los 10 batches y no se ha preprocesado antes                                |
-| `preprocess_data`         | Limpia datos, divide en train/test (80/20), aplica escalado y one-hot encoding. Guarda en `covertype_cleaned` y sube el preprocesador a MinIO |
-| `pause_dag`               | Pausa el DAG automaticamente al finalizar el proceso completo                                                                                 |
+| Tarea                 | Descripcion                                                                                                                                                                       |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `t1: create_tables`   | Verifica si las tablas existen en MySQL. Si no existen, crea la tabla `covertype_raw` con el esquema apropiado para el dataset Covertype                                          |
+| `t2: load_raw_data`   | Realiza una peticion GET a la API para obtener una porcion aleatoria del batch actual. Inserta datos en `covertype_raw` y publica banderas `new_data_loaded`/`all_data_collected` |
+| `t2_check_preprocess` | **ShortCircuitOperator**. Ejecuta `preprocess_data` solo cuando en esa iteracion se cargaron datos nuevos                                                                         |
+| `t3: preprocess_data` | Limpia, transforma y divide datos; recarga `covertype_cleaned` en cada iteracion con nuevos datos y sube el preprocesador a MinIO                                                 |
+| `t2_check_pause`      | **ShortCircuitOperator**. Habilita `pause_dag` cuando la API reporta fin de recoleccion                                                                                           |
+| `t4: pause_dag`       | **Pausa el DAG automaticamente** para detener futuras ejecuciones programadas cuando ya no hay datos nuevos                                                                       |
 
-**Preprocesamiento del DAG:**
-1. Elimina filas con valores nulos y duplicados
-2. Divide en train (80%) y test (20%) con estratificacion por clase
-3. Pipeline numerico: imputacion por mediana + `StandardScaler`
-4. Pipeline categorico: imputacion por moda + `OneHotEncoder`
-5. Guarda datos limpios en `covertype_cleaned` (con columna `dataset` = `train`/`test`)
-6. Sube el preprocesador a `v1/preprocess/preprocessor.joblib` en MinIO
+### Logica de Control (ShortCircuitOperator)
+
+#### Preprocesamiento por iteracion
+
+| Escenario                                            | `new_data_loaded` | `all_data_collected` | Ejecuta `preprocess_data`? |
+| ---------------------------------------------------- | :---------------: | :------------------: | :------------------------: |
+| Se obtuvieron datos nuevos                           |      `True`       |       `False`        |             Si             |
+| API indica fin de recoleccion (sin datos en llamada) |      `False`      |        `True`        |             No             |
+| Error temporal de API                                |      `False`      |       `False`        |             No             |
+
+#### Pausa del DAG
+
+| Escenario                     | `all_data_collected` | Ejecuta `pause_dag`? |
+| ----------------------------- | :------------------: | :------------------: |
+| Aun hay datos por recolectar  |       `False`        |          No          |
+| API indica fin de recoleccion |        `True`        |          Si          |
+
+### Preprocesamiento
+
+El paso de preprocesamiento realiza:
+
+1. **Limpieza:** Eliminacion de filas con valores nulos y duplicados
+2. **Categorias OHE por iteracion:** Deteccion de categorias sobre el conjunto completo de la iteracion (incluye datos que quedaran en train y test)
+3. **Division:** Separacion en conjuntos de entrenamiento (80%) y prueba (20%) con estratificacion
+4. **Pipeline numerico:** Imputacion por mediana + Escalado estandar (`StandardScaler`)
+5. **Pipeline categorico:** Imputacion por moda + Codificacion one-hot (`OneHotEncoder`)
+6. **Esquema dinamico en tabla limpia:** `covertype_cleaned` se recrea en cada corrida de preprocesamiento para soportar nuevas columnas por categorias no vistas antes
+7. **Almacenamiento:** Datos limpios en MySQL (`covertype_cleaned`) y preprocesador en MinIO
+
+---
+
+## Evidencias de Funcionamiento
+
+### 1. Creacion de Tablas
+
+> Captura que muestra la tarea `create_tables` creando la tabla `covertype_raw` en MySQL.
+
+![Creacion de tablas](img/01_create_tables.png)
+
+### 2. Carga de Datos por Batches
+
+> Captura que muestra la tarea `load_raw_data` obteniendo datos de la API e insertandolos en MySQL.
+
+![Carga de datos](img/02_load_raw_data.png)
+
+### 3. Preprocesamiento en Cada Iteracion con Datos Nuevos
+
+> Captura que muestra como `check_should_preprocess` habilita `preprocess_data` cuando `load_raw_data` inserta una nueva porcion del batch.
+
+![Skip preprocessing](img/03_skip_preprocess.png)
+
+### 4. Actualizacion de Tabla Cleaned por Iteracion
+
+> Captura que muestra `covertype_cleaned` recargada en una corrida intermedia (sin esperar al ultimo batch).
+
+![Preprocesamiento](img/04_preprocess_data.png)
+
+### 5. Carga del Preprocesador a MinIO
+
+> Captura que muestra el preprocesador (`preprocessor.joblib`) almacenado en el bucket de MinIO.
+
+![MinIO upload](img/05_minio_preprocessor.png)
+
+### 6. Datos en MySQL (Tabla Raw)
+
+> Captura que muestra los datos crudos almacenados en la tabla `covertype_raw`.
+
+![Tabla raw](img/06_mysql_raw.png)
+
+### 7. Datos en MySQL (Tabla Cleaned)
+
+> Captura que muestra los datos preprocesados en la tabla `covertype_cleaned` con las columnas transformadas.
+
+![Tabla cleaned](img/07_mysql_cleaned.png)
+
+### 8. Fin de Recoleccion y Pausa del DAG
+
+> Captura que muestra `check_should_pause` en `success` y `pause_dag` ejecutado cuando la API responde que ya se recolecto toda la informacion minima.
+
+![DAG pausado](img/08_dag_paused.png)
+
+### 9. Vista General del DAG en Airflow
+
+> Captura de la vista de grafo del DAG mostrando el flujo completo de tareas.
+
+![Vista DAG](img/09_dag_graph_view.png)
+
+### 10. Historial de Ejecuciones
+
+> Captura del historial mostrando varias corridas con preprocesamiento exitoso y la corrida final que pausa el DAG.
+
+![Historial](img/10_dag_runs_history.png)
+
+---
+
+## Evidencias de la API de Inferencia
+
+### 1. Documentacion de Endpoints (Swagger)
+
+> Captura de `http://localhost:8001/docs` mostrando los endpoints disponibles (`GET /models` y `POST /predict`).
+
+<!-- ![Swagger inference](img/inference/01_swagger_endpoints.png) -->
+
+### 2. Listado de Modelos Disponibles
+
+> Captura de la respuesta de `GET /models`, evidenciando que la API consulta MinIO y lista modelos para seleccionar.
+
+<!-- ![List models](img/inference/02_get_models.png) -->
+
+### 3. Seleccion de Modelo en Prediccion
+
+> Captura de `POST /predict` en Swagger donde se elige el campo `model` (por ejemplo `random_forest_v1`) y se envian las features de entrada.
+
+<!-- ![Select model](img/inference/03_select_model_predict.png) -->
+
+### 4. Respuesta de Prediccion
+
+> Captura de la respuesta exitosa de `POST /predict`, mostrando `modelo_utilizado` y `prediccion_cover_type`.
+
+<!-- ![Predict response](img/inference/04_predict_response.png) -->
+
+---
+
+## Evidencias del Notebook de Entrenamiento y MinIO
+
+### 1. Lectura de Datos Limpios desde MySQL
+
+> Captura de una celda en `model_training/train.ipynb` leyendo la tabla `covertype_cleaned` como fuente para entrenamiento.
+
+<!-- ![Read cleaned data](img/training/01_read_cleaned_mysql.png) -->
+
+### 2. Entrenamiento de Modelos
+
+> Captura de celdas donde se entrenan modelos (ej. Random Forest, XGBoost u otros definidos en el notebook) y se reportan metricas.
+
+<!-- ![Train models](img/training/02_train_models_metrics.png) -->
+
+### 3. Serializacion de Modelo y Preprocesador
+
+> Captura de celdas donde se generan artefactos `.joblib` del modelo y del preprocesador con el mismo nombre base.
+
+<!-- ![Serialize artifacts](img/training/03_serialize_joblib.png) -->
+
+### 4. Carga de Artefactos en MinIO
+
+> Captura de celdas/subidas mostrando almacenamiento en `models/<nombre>.joblib` y `preprocessor/<nombre>.joblib` dentro del bucket `covertype-project`.
+
+<!-- ![Upload to minio](img/training/04_upload_minio.png) -->
+
+### 5. Verificacion en MinIO Console
+
+> Captura de `http://localhost:19001` mostrando ambos artefactos disponibles para consumo desde `inference_api`.
+
+<!-- ![Minio artifacts](img/training/05_minio_console_artifacts.png) -->
 
 ---
 
