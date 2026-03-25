@@ -1,0 +1,109 @@
+services:
+  mlflow_db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: mlflow
+      POSTGRES_DB: mlflow
+    ports:
+      - "5434:5432"
+    volumes:
+      - mlflow-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "mlflow", "-d", "mlflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: Minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: supersecret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+
+  data_db:
+    image: mysql:8.0
+    container_name: DataDB
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: penguins_data
+      MYSQL_USER: datauser
+      MYSQL_PASSWORD: datapass
+    ports:
+      - "3306:3306"
+    volumes:
+      - data-db-volume:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "datauser", "-pdatapass"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  mlflow:
+    build:
+      context: mlflow
+      dockerfile: Dockerfile
+    container_name: MLflow
+    depends_on:
+      mlflow_db:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    ports:
+      - "5001:5000"
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: supersecret
+    restart: always
+
+  jupyter:
+    image: jupyter/scipy-notebook:latest
+    container_name: Jupyter
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/home/jovyan/work
+    environment:
+      JUPYTER_ENABLE_LAB: "yes"
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: supersecret
+      MYSQL_HOST: data_db
+      MYSQL_USER: datauser
+      MYSQL_PASSWORD: datapass
+      MYSQL_DATABASE: penguins_data
+    depends_on:
+      - mlflow
+      - data_db
+    restart: always
+
+  api:
+    image: tannialucia/mlops:inference-api
+    container_name: InferenceAPI
+    ports:
+      - "8000:8000"
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: supersecret
+    depends_on:
+      - mlflow
+    restart: always
+
+volumes:
+  mlflow-db-volume:
+  minio-data:
+  data-db-volume:
