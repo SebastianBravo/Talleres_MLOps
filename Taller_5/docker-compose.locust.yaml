@@ -91,9 +91,8 @@ services:
 
   api:
     image: tannialucia/mlops:inference-api
-    container_name: InferenceAPI
     ports:
-      - "8000:8000"
+      - "8000-8003:8000"
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
@@ -102,10 +101,15 @@ services:
     depends_on:
       - mlflow
     deploy:
+      replicas: 3
       resources:
         limits:
-          memory: 100M  
-          cpus: 0.25
+          memory: 512M
+          cpus: '0.50'
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: always
 
   locust:
@@ -118,7 +122,11 @@ services:
     depends_on:
       - api
     environment:
-      - LOCUST_HOST=http://api:8000  
+      - LOCUST_HOST=http://api:8000
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
 
 volumes:
   mlflow-db-volume:
