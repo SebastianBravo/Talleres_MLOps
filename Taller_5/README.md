@@ -85,6 +85,22 @@ Se probaron diferentes configuraciones de memoria y CPU para encontrar el minimo
 
 La API consume ~150MB solo al arrancar (MLflow client + scikit-learn + pandas + modelo). Bajo carga de 10,000 usuarios, la memoria sube a ~250MB, por lo que 384M no es suficiente y 512M es el minimo.
 
+### Resultados: 1 replica SIN limites de recursos
+
+Primero se probo la API sin ninguna restriccion de CPU ni memoria para establecer un baseline.
+
+![full_cpu](img/full_cpu.png)
+![users_full_cpu](img/users_full_cpu.png)
+
+| Metrica | Valor |
+|---|---|
+| RPS | 21 |
+| Failures | 36% |
+| Response time P50 | ~30,000 ms |
+| Response time P95 | ~130,000 ms |
+
+Incluso sin limites, una sola instancia de uvicorn no puede manejar 10,000 usuarios concurrentes. El cuello de botella es el GIL de Python y el single-worker de uvicorn.
+
 ### Resultados: 1 replica con recursos minimos (512M / 0.5 CPU)
 
 #### 10,000 usuarios concurrentes
@@ -102,20 +118,13 @@ La API consume ~150MB solo al arrancar (MLflow client + scikit-learn + pandas + 
 | P95 response time | 136,000 ms |
 | Max response time | 136,710 ms |
 
-Con 1 replica y 10,000 usuarios la API no logra soportar la carga: 33% de failures, tiempos de respuesta de 18 segundos en mediana y el contenedor eventualmente hace OOM bajo la presion.
+Con 1 replica limitada y 10,000 usuarios, el comportamiento es similar al baseline sin limites: la API no logra soportar la carga.
 
 #### 5,000 usuarios concurrentes (maximo estable con 1 replica)
 
 ![locust_5000_500](img/locust_5000_500.png)
 
-Con 5,000 usuarios la API se mantiene estable: ~1,000 req/s, 0% failures, ~3 segundos de response time. Este es el maximo de usuarios que soporta una sola instancia con recursos minimos.
-
-#### CPU al maximo bajo carga
-
-![full_cpu](img/full_cpu.png)
-![users_full_cpu](img/users_full_cpu.png)
-
-Se observa que el CPU alcanza el limite de 0.5 cores asignados, lo cual es el cuello de botella principal.
+Con 5,000 usuarios la API se mantiene estable: ~1,000 req/s, 0% failures, ~3 segundos de response time. Este es el maximo de usuarios que soporta una sola instancia.
 
 ### Resultados: 3 replicas con recursos minimos (512M / 0.5 CPU cada una)
 
@@ -135,13 +144,13 @@ Con 3 replicas la API soporta **10,000 usuarios concurrentes sin un solo failure
 
 ## Analisis Comparativo
 
-| Metrica | 1 Replica | 3 Replicas | Mejora |
+| Metrica | Sin limites (1x) | 1 Replica (512M/0.5CPU) | 3 Replicas (512M/0.5CPU c/u) |
 |---|---|---|---|
-| RPS | 52 | 1,199 | **23x** |
-| Failures | 33% | 0% | **Eliminados** |
-| Median response time | 18,000 ms | 5,600 ms | **3.2x mas rapido** |
-| P95 response time | 136,000 ms | 7,800 ms | **17x mas rapido** |
-| Usuarios maximos estables | ~5,000 | 10,000+ | **2x** |
+| RPS | 21 | 52 | **1,199** |
+| Failures | 36% | 33% | **0%** |
+| Median response time | 30,000 ms | 18,000 ms | **5,600 ms** |
+| P95 response time | 130,000 ms | 136,000 ms | **7,800 ms** |
+| Usuarios maximos estables | ~5,000 | ~5,000 | **10,000+** |
 
 ## Respuestas a las Preguntas del Taller
 
