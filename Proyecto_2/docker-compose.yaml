@@ -18,9 +18,10 @@
 include:
   # - compose/minio.yml
   - compose/postgres.yml
-  - compose/mysql.yml
+  - compose/postgres-dataset.yml
   - compose/redis.yml
   - compose/airflow.yml
+  - compose/adminer.yml
   # - compose/data_api.yml
   # - compose/jupyterlab.yml
   # - compose/model_training.yml

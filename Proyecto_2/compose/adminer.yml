@@ -1,0 +1,7 @@
+# Adminer para gestión de bases de datos
+services:
+  adminer:
+      image: adminer
+      restart: always
+      ports:
+        - 8085:8080

@@ -16,12 +16,13 @@ x-airflow-common:
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
-    MYSQL_HOST: mysql_db
-    MYSQL_USER: airflow
-    MYSQL_PASSWORD: airflow
-    MYSQL_DATABASE: covertype_data
-    API_URL: http://api-data:80
-    API_GROUP_NUMBER: 7
+    POSTGRES_DATASET_HOST: postgres-dataset
+    POSTGRES_DATASET_PORT: 5433
+    POSTGRES_DATASET_USER: airflow
+    POSTGRES_DATASET_PASSWORD: airflow
+    POSTGRES_DATASET_DATABASE: diabetic_data
+    # API_URL: http://api-data:80
+    # API_GROUP_NUMBER: 7
     # MINIO_ENDPOINT: http://minio:9000
     # AWS_ACCESS_KEY_ID: minioadmin
     # AWS_SECRET_ACCESS_KEY: minioadmin

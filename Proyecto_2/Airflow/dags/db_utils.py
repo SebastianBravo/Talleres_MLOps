@@ -1,7 +1,7 @@
 import os
 import boto3
 import requests
-import mysql.connector
+import psycopg2
 import pandas as pd
 import numpy as np
 import joblib
@@ -25,23 +25,24 @@ def connect_to_minio():
     return minio_client
 
 
-# Función para conectarse a la base de datos MySQL
-def connect_to_mysql():
-    connection = mysql.connector.connect(
-        host=os.getenv("MYSQL_HOST"),
-        user=os.getenv("MYSQL_USER"),
-        password=os.getenv("MYSQL_PASSWORD"),
-        database=os.getenv("MYSQL_DATABASE"),
+# Función para conectarse a la base de datos PostgreSQL
+def connect_to_db():
+    connection = psycopg2.connect(
+        host=os.getenv("POSTGRES_DATASET_HOST"),
+        user=os.getenv("POSTGRES_DATASET_USER"),
+        password=os.getenv("POSTGRES_DATASET_PASSWORD"),
+        dbname=os.getenv("POSTGRES_DATASET_DATABASE"),
+        port=os.getenv("POSTGRES_DATASET_PORT"),
     )
-    print("Conectado a la base de datos MySQL")
+    print("Conectado a la base de datos PostgreSQL")
     return connection
 
 
-# Función para cerrar la conexión a MySQL
-def close_mysql_connection(connection):
-    if connection.is_connected():
+# Función para cerrar la conexión a PostgreSQL
+def close_db_connection(connection):
+    if connection and not connection.closed:
         connection.close()
-        print("Conexión a MySQL cerrada")
+        print("Conexión a PostgreSQL cerrada")
 
 
 # Función para ejecutar una consulta SQL
@@ -50,7 +51,9 @@ def execute_query(connection, query):
     cursor.execute(query)
     connection.commit()
     print("Consulta ejecutada exitosamente")
-    return cursor.fetchall()
+    if cursor.description:
+        return cursor.fetchall()
+    return []
 
 
 # Función para obtener datos desde una fuente FastAPI (API_URL)
@@ -96,28 +99,68 @@ def delete_table_if_exists(connection, table_name):
     print(f"Tabla {table_name} eliminada (si existía)")
 
 
-# Función para crear la tabla cruda del dataset covertype
+# Función para crear la tabla cruda del dataset diabetic_data
 def create_table_raw(connection, table_name):
-    # Crear tabla con esquema apropiado para el dataset covertype, permitiendo valores nulos
+    # Crear tabla con esquema apropiado para el dataset diabetic_data, permitiendo valores nulos
     query = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        elevation INT NULL,
-        aspect INT NULL,
-        slope INT NULL,
-        horizontal_distance_to_hydrology INT NULL,
-        vertical_distance_to_hydrology INT NULL,
-        horizontal_distance_to_roadways INT NULL,
-        hillshade_9am INT NULL,
-        hillshade_noon INT NULL,
-        hillshade_3pm INT NULL,
-        horizontal_distance_to_fire_points INT NULL,
-        wilderness_area VARCHAR(50) NULL,
-        soil_type VARCHAR(50) NULL,
-        cover_type INT NULL
+        id SERIAL PRIMARY KEY,
+        load_batch VARCHAR(64) NULL,
+        load_timestamp TIMESTAMP NOT NULL,
+        data_source VARCHAR(128) NULL,
+        record_status VARCHAR(32) NULL,
+        encounter_id BIGINT NULL,
+        patient_nbr BIGINT NULL,
+        race VARCHAR(32) NULL,
+        gender VARCHAR(16) NULL,
+        age VARCHAR(16) NULL,
+        weight VARCHAR(16) NULL,
+        admission_type_id INT NULL,
+        discharge_disposition_id INT NULL,
+        admission_source_id INT NULL,
+        time_in_hospital INT NULL,
+        payer_code VARCHAR(32) NULL,
+        medical_specialty VARCHAR(64) NULL,
+        num_lab_procedures INT NULL,
+        num_procedures INT NULL,
+        num_medications INT NULL,
+        number_outpatient INT NULL,
+        number_emergency INT NULL,
+        number_inpatient INT NULL,
+        diag_1 VARCHAR(16) NULL,
+        diag_2 VARCHAR(16) NULL,
+        diag_3 VARCHAR(16) NULL,
+        number_diagnoses INT NULL,
+        max_glu_serum VARCHAR(16) NULL,
+        A1Cresult VARCHAR(16) NULL,
+        metformin VARCHAR(16) NULL,
+        repaglinide VARCHAR(16) NULL,
+        nateglinide VARCHAR(16) NULL,
+        chlorpropamide VARCHAR(16) NULL,
+        glimepiride VARCHAR(16) NULL,
+        acetohexamide VARCHAR(16) NULL,
+        glipizide VARCHAR(16) NULL,
+        glyburide VARCHAR(16) NULL,
+        tolbutamide VARCHAR(16) NULL,
+        pioglitazone VARCHAR(16) NULL,
+        rosiglitazone VARCHAR(16) NULL,
+        acarbose VARCHAR(16) NULL,
+        miglitol VARCHAR(16) NULL,
+        troglitazone VARCHAR(16) NULL,
+        tolazamide VARCHAR(16) NULL,
+        examide VARCHAR(16) NULL,
+        citoglipton VARCHAR(16) NULL,
+        insulin VARCHAR(16) NULL,
+        "glyburide-metformin" VARCHAR(16) NULL,
+        "glipizide-metformin" VARCHAR(16) NULL,
+        "glimepiride-pioglitazone" VARCHAR(16) NULL,
+        "metformin-rosiglitazone" VARCHAR(16) NULL,
+        "metformin-pioglitazone" VARCHAR(16) NULL,
+        "change" VARCHAR(16) NULL,
+        diabetesMed VARCHAR(8) NULL,
+        readmitted VARCHAR(8) NOT NULL 
     );
     """
-
     execute_query(connection, query)
     print(f"Tabla {table_name} creada exitosamente")
 
@@ -128,10 +171,10 @@ def create_table_cleaned(connection, table_name, feature_names):
     sanitized_cols = [
         name.replace("__", "_").replace(" ", "_") for name in feature_names
     ]
-    feature_columns = ", ".join([f"`{col}` FLOAT" for col in sanitized_cols])
+    feature_columns = ", ".join([f'"{col}" DOUBLE PRECISION' for col in sanitized_cols])
     query = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
-        id INT AUTO_INCREMENT PRIMARY KEY,
+        id SERIAL PRIMARY KEY,
         {feature_columns},
         dataset VARCHAR(10),
         cover_type INT
@@ -147,13 +190,13 @@ def create_table_cleaned(connection, table_name, feature_names):
 def insert_raw_covertype_data(connection, table_name, df=None):
     if df is None or df.empty:
         print(
-            "No se cargaron datos desde la API o el DataFrame está vacío. No se insertarán datos en MySQL."
+            "No se cargaron datos desde la API o el DataFrame está vacío. No se insertarán datos en PostgreSQL."
         )
         return
     else:
         print(f"Cargando datos: {len(df)} filas, {len(df.columns)} columnas...")
 
-        # Reemplazar valores NaN con None para manejar NULLs correctamente en MySQL
+        # Reemplazar valores NaN con None para manejar NULLs correctamente en PostgreSQL
         df = df.replace({float("nan"): None})
 
         cursor = connection.cursor()
@@ -176,8 +219,8 @@ def insert_raw_covertype_data(connection, table_name, df=None):
         print(f"Se cargaron {len(val)} registros en la tabla {table_name}")
 
 
-# Función para cargar datos desde la base de datos MySQL
-def load_data_from_mysql(connection, table_name):
+# Función para cargar datos desde la base de datos PostgreSQL
+def load_data_from_db(connection, table_name):
     query = f"SELECT * FROM {table_name}"
     cursor = connection.cursor()
     cursor.execute(query)
@@ -200,8 +243,8 @@ def preprocess_and_insert(
     test_size=0.2,
     random_state=42,
 ):
-    # 1. Cargar datos crudos desde MySQL
-    df = load_data_from_mysql(connection, raw_table)
+    # 1. Cargar datos crudos desde PostgreSQL
+    df = load_data_from_db(connection, raw_table)
     print(f"Datos crudos cargados: {len(df)} filas")
 
     # 2. Eliminar filas con valores nulos y duplicados
@@ -313,7 +356,7 @@ def preprocess_and_insert(
     feature_cols = preprocessor.get_feature_names_out().tolist()
     print(f"Nombres de características: {feature_cols}")
 
-    # Sanitizar nombres de columnas para compatibilidad con MySQL
+    # Sanitizar nombres de columnas para compatibilidad con PostgreSQL
     sanitized_cols = [
         name.replace("__", "_").replace(" ", "_") for name in feature_cols
     ]
@@ -341,7 +384,7 @@ def preprocess_and_insert(
 
     # 12. Insertar datos procesados en la tabla limpia
     columns = ", ".join(
-        [f"`{col}`" for col in sanitized_cols] + ["dataset", "cover_type"]
+        [f'"{col}"' for col in sanitized_cols] + ["dataset", "cover_type"]
     )
     placeholders = ", ".join(["%s"] * (n_features + 2))
     query = f"INSERT INTO {cleaned_table} ({columns}) VALUES ({placeholders})"
