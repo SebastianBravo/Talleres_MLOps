@@ -167,6 +167,7 @@ def train_models(**context):
         connection,
         cleaned_table="diabetic_data_cleaned",
         batch_id=batch_number,
+        preprocessor_bucket="diabetic-project",
         experiment_name="diabetic-readmission",
         registered_model_name="diabetic-readmission-model",
         primary_metric_name="recall_lt30",

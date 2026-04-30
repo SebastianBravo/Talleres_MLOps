@@ -1,9 +1,11 @@
 import os
 import json
+import tempfile
 from datetime import datetime
 
 import mlflow
 import mlflow.sklearn
+import joblib
 from mlflow.exceptions import MlflowException
 import numpy as np
 import pandas as pd
@@ -20,6 +22,9 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.preprocessing import label_binarize
+from sklearn.pipeline import Pipeline
+
+from .storage_utils import connect_to_minio
 
 
 def _compute_metrics(
@@ -59,10 +64,51 @@ def _compute_metrics(
     return metrics, class_report
 
 
+def _get_preprocessor_version(connection, processed_table, batch_id=None):
+    cursor = connection.cursor()
+    if batch_id is None:
+        cursor.execute(
+            f"""
+            SELECT preprocessor_version
+            FROM {processed_table}
+            ORDER BY processed_at DESC
+            LIMIT 1
+            """
+        )
+    else:
+        cursor.execute(
+            f"""
+            SELECT preprocessor_version
+            FROM {processed_table}
+            WHERE batch_id = %s
+            ORDER BY processed_at DESC
+            LIMIT 1
+            """,
+            (batch_id,),
+        )
+
+    row = cursor.fetchone()
+    cursor.close()
+    return row[0] if row else None
+
+
+def _load_preprocessor_from_minio(bucket, preprocessor_version, prefix="preprocess"):
+    minio_client = connect_to_minio()
+    remote_key = f"{prefix}/{preprocessor_version}/preprocessor.joblib"
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        local_path = os.path.join(temp_dir, "preprocessor.joblib")
+        minio_client.download_file(bucket, remote_key, local_path)
+        return joblib.load(local_path)
+
+
 def train_and_register_models(
     connection,
     cleaned_table,
     batch_id=None,
+    preprocessor_bucket=None,
+    preprocessor_prefix="preprocess",
+    processed_table="diabetic_data_processed_batches",
     experiment_name="diabetic-readmission",
     registered_model_name="diabetic-readmission-model",
     primary_metric_name="recall_lt30",
@@ -156,6 +202,25 @@ def train_and_register_models(
         client.get_registered_model(registered_model_name)
     except MlflowException:
         client.create_registered_model(registered_model_name)
+
+    preprocessor = None
+    if preprocessor_bucket:
+        preprocessor_version = _get_preprocessor_version(
+            connection, processed_table, batch_id
+        )
+        if preprocessor_version:
+            preprocessor = _load_preprocessor_from_minio(
+                preprocessor_bucket, preprocessor_version, preprocessor_prefix
+            )
+            print(
+                "Preprocessor cargado para registrar el pipeline: "
+                f"{preprocessor_version}"
+            )
+        else:
+            print(
+                "No se encontro preprocessor versionado para el batch. "
+                "Se registrara el modelo sin preprocesador."
+            )
 
     # Entrenar y registrar cada modelo
     for model_name, model_cls, param_grid in candidates:
@@ -253,7 +318,13 @@ def train_and_register_models(
                         json.dump(cm.tolist(), cm_file)
                     mlflow.log_artifact(cm_path)
 
-                    mlflow.sklearn.log_model(final_model, artifact_path="model")
+                    if preprocessor is not None:
+                        pipeline_model = Pipeline(
+                            steps=[("preprocess", preprocessor), ("model", final_model)]
+                        )
+                        mlflow.sklearn.log_model(pipeline_model, artifact_path="model")
+                    else:
+                        mlflow.sklearn.log_model(final_model, artifact_path="model")
 
                     current_metric = avg_metrics.get(f"cv_{primary_metric_name}")
                     if current_metric is not None:
