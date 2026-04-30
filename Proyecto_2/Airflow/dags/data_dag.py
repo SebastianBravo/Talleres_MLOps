@@ -20,8 +20,11 @@ DATA_BATCH_SIZE = 15000
 
 
 def get_total_rows(data_filepath):
+    """Cuenta filas del CSV excluyendo el encabezado."""
+    # Leer el archivo y contar lineas
     with open(data_filepath, "r", encoding="utf-8") as file_handle:
         total_lines = sum(1 for _ in file_handle)
+    # Restar el encabezado
     return max(total_lines - 1, 0)
 
 
@@ -54,6 +57,7 @@ def create_tables():
 
 
 def validate_source_file():
+    """Valida la existencia del archivo fuente y devuelve su ruta."""
     # Asegura que el archivo fuente exista (o lo descarga).
     data_filepath = ensure_dataset_file()
     if not data_filepath or not os.path.isfile(data_filepath):
@@ -62,6 +66,7 @@ def validate_source_file():
 
 
 def load_raw_batch(**context):
+    """Lee el siguiente batch del CSV y lo inserta en la tabla raw."""
     # Lee el siguiente lote y lo inserta en la tabla raw.
     data_filepath = context["ti"].xcom_pull(task_ids="validate_source_file")
     if not data_filepath:
@@ -76,6 +81,7 @@ def load_raw_batch(**context):
         Variable.set("diabetic_data_total_rows", total_rows)
         print(f"Total de filas detectadas en el CSV: {total_rows}")
 
+    # Leer el siguiente lote
     df, next_offset = read_diabetes_batch(data_filepath, DATA_BATCH_SIZE, offset)
     if df.empty:
         print("No hay nuevos registros por cargar.")
@@ -84,6 +90,7 @@ def load_raw_batch(**context):
 
     # Identificador del lote para trazabilidad.
     batch_number = int(Variable.get("diabetic_data_batch_number", default_var=0)) + 1
+    # Insertar batch en tabla raw
     connection = connect_to_db()
     insert_raw_diabetic_data(
         connection,
@@ -93,10 +100,12 @@ def load_raw_batch(**context):
         data_source=data_filepath,
     )
     close_db_connection(connection)
+    # Actualizar variables de progreso
     Variable.set("diabetic_data_offset", next_offset)
     Variable.set("diabetic_data_batch_number", batch_number)
     context["ti"].xcom_push(key="batch_number", value=batch_number)
 
+    # Actualizar estado de ingesta completa.
     if next_offset >= total_rows:
         Variable.set("diabetic_data_complete", True)
         print("Todos los datos fueron ingestados.")
@@ -106,6 +115,8 @@ def load_raw_batch(**context):
 
 
 def assign_dataset(**context):
+    """Asigna deterministamente train/test para filas nuevas."""
+    # Asignar split en base de datos
     connection = connect_to_db()
     assign_dataset_split(
         connection,
@@ -118,12 +129,15 @@ def assign_dataset(**context):
 
 
 def preprocess_batch(**context):
+    """Preprocesa el batch actual y versiona el preprocesador."""
+    # Recuperar batch actual desde XCom
     batch_number = context["ti"].xcom_pull(
         task_ids="load_raw_batch", key="batch_number"
     )
     if not batch_number:
         print("No hay batch nuevo para preprocesar.")
         return
+    # Ejecutar preprocesamiento y versionado
     connection = connect_to_db()
     preprocess_and_insert(
         connection,
@@ -135,103 +149,6 @@ def preprocess_batch(**context):
         preprocessor_path="preprocessor",
     )
     close_db_connection(connection)
-
-
-# def load_raw_data(**context):
-#     """Carga datos crudos desde la API y los inserta en db.
-
-#     Publica banderas en XCom para indicar si se cargaron datos nuevos
-#     y si ya se recolectaron todos los batches.
-#     """
-#     df = get_data_from_api()
-
-#     if df is None:
-#         print("No fue posible obtener datos de la API en esta ejecución.")
-#         context["ti"].xcom_push(key="new_data_loaded", value=False)
-#         context["ti"].xcom_push(key="all_data_collected", value=False)
-#         return
-
-#     if not df.empty:
-#         # Se obtuvieron datos, insertarlos en db
-#         connection = connect_to_db()
-#         insert_raw_covertype_data(connection, "covertype_raw", df)
-#         close_db_connection(connection)
-#         # Se cargaron datos nuevos, pero aún faltan batches por recolectar
-#         context["ti"].xcom_push(key="new_data_loaded", value=True)
-#         context["ti"].xcom_push(key="all_data_collected", value=False)
-#     else:
-#         # No hay datos nuevos (ya se recolectaron todos o hubo un error)
-#         context["ti"].xcom_push(key="new_data_loaded", value=False)
-#         context["ti"].xcom_push(key="all_data_collected", value=True)
-
-
-# def check_should_preprocess(**context):
-#     """Verifica si se debe proceder al preprocesamiento.
-
-#     Retorna True cuando en esta ejecución se cargaron datos nuevos.
-#     """
-#     new_data_loaded = context["ti"].xcom_pull(
-#         task_ids="load_raw_data", key="new_data_loaded"
-#     )
-#     all_data_collected = context["ti"].xcom_pull(
-#         task_ids="load_raw_data", key="all_data_collected"
-#     )
-
-#     if new_data_loaded:
-#         print("Hay datos nuevos: se ejecutará preprocesamiento en esta iteración.")
-#         return True
-
-#     if all_data_collected:
-#         print(
-#             "La API reportó que ya se recolectó toda la información mínima. Se omite preprocesamiento."
-#         )
-#         return False
-
-#     print("No hubo datos nuevos en esta ejecución. Se omite preprocesamiento.")
-#     return False
-
-
-# def check_should_pause(**context):
-#     """Pausa el DAG únicamente cuando la API reporta fin de recolección."""
-#     all_data_collected = context["ti"].xcom_pull(
-#         task_ids="load_raw_data", key="all_data_collected"
-#     )
-
-#     if all_data_collected:
-#         print("No hay más datos por recolectar. Se pausará el DAG.")
-#         return True
-
-#     print("Aún hay datos por recolectar. El DAG continuará ejecutándose.")
-#     return False
-
-
-# def preprocess_data():
-#     """Ejecuta el preprocesamiento de los datos crudos y los inserta en la tabla limpia."""
-#     print("Preprocesando datos...")
-#     connection = connect_to_db()
-#     preprocess_and_insert(
-#         connection,
-#         "covertype_raw",
-#         "covertype_cleaned",
-#         bucket="covertype-project",
-#         preprocessor_path="preprocessor",
-#     )
-#     close_db_connection(connection)
-
-
-# def pause_dag():
-#     """Pausa este DAG para que no se programen más ejecuciones automáticas."""
-#     with create_session() as session:
-#         dag_model = (
-#             session.query(DagModel).filter(DagModel.dag_id == "data_dag").first()
-#         )
-#         if dag_model:
-#             dag_model.is_paused = True
-#             session.commit()
-#             print(
-#                 "El DAG 'data_dag' ha sido pausado. No habrá más ejecuciones programadas."
-#             )
-
 
 # Definición del DAG principal
 with DAG(
@@ -261,29 +178,5 @@ with DAG(
     # Tarea 5: Preprocesar y versionar batch
     t5 = PythonOperator(task_id="preprocess_batch", python_callable=preprocess_batch)
 
-    # # Tarea 2: Cargar datos crudos desde la API
-    # t2 = PythonOperator(task_id="load_raw_data", python_callable=load_raw_data)
-
-    # # Verificación: ¿Se debe preprocesar en esta iteración?
-    # t2_check_preprocess = ShortCircuitOperator(
-    #     task_id="check_should_preprocess",
-    #     python_callable=check_should_preprocess,
-    # )
-
-    # # Tarea 3: Preprocesar datos crudos e insertar en tabla limpia
-    # t3 = PythonOperator(task_id="preprocess_data", python_callable=preprocess_data)
-
-    # # Verificación: ¿Se debe pausar el DAG?
-    # t2_check_pause = ShortCircuitOperator(
-    #     task_id="check_should_pause",
-    #     python_callable=check_should_pause,
-    # )
-
-    # # Tarea 4: Pausar el DAG para detener ejecuciones futuras
-    # t4 = PythonOperator(task_id="pause_dag", python_callable=pause_dag)
-
-    # Flujo: crear tablas -> cargar datos -> (si hay nuevos, preprocesar) y (si se completó, pausar)
+    # Flujo principal: crear tablas -> validar archivo -> cargar batch -> asignar split -> preprocesar
     t1 >> t2 >> t3 >> t4 >> t5
-    # t1 >> t2
-    # t2 >> t2_check_preprocess >> t3
-    # t2 >> t2_check_pause >> t4

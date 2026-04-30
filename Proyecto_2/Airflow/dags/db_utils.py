@@ -17,6 +17,8 @@ from sklearn.model_selection import train_test_split
 
 # Función para conectarse a MinIO
 def connect_to_minio():
+    """Crea y devuelve un cliente de MinIO usando variables de entorno."""
+    # Leer credenciales y endpoint desde variables de entorno
     minio_client = boto3.client(
         "s3",
         endpoint_url=os.getenv("MINIO_ENDPOINT"),
@@ -24,12 +26,15 @@ def connect_to_minio():
         aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
         region_name=os.getenv("AWS_DEFAULT_REGION"),
     )
+    # Confirmar conexion
     print("Conectado a MinIO")
     return minio_client
 
 
 # Función para conectarse a la base de datos PostgreSQL
 def connect_to_db():
+    """Abre una conexion a PostgreSQL usando variables de entorno."""
+    # Leer credenciales de la base desde variables de entorno
     connection = psycopg2.connect(
         host=os.getenv("POSTGRES_DATASET_HOST"),
         user=os.getenv("POSTGRES_DATASET_USER"),
@@ -37,12 +42,15 @@ def connect_to_db():
         dbname=os.getenv("POSTGRES_DATASET_DATABASE"),
         port=os.getenv("POSTGRES_DATASET_PORT"),
     )
+    # Confirmar conexion
     print("Conectado a la base de datos PostgreSQL")
     return connection
 
 
 # Función para cerrar la conexión a PostgreSQL
 def close_db_connection(connection):
+    """Cierra la conexion abierta si existe."""
+    # Evitar cierre de conexiones nulas o ya cerradas
     if connection and not connection.closed:
         connection.close()
         print("Conexión a PostgreSQL cerrada")
@@ -50,10 +58,14 @@ def close_db_connection(connection):
 
 # Función para ejecutar una consulta SQL
 def execute_query(connection, query):
+    """Ejecuta una consulta SQL simple y retorna resultados si aplica."""
+    # Ejecutar consulta
     cursor = connection.cursor()
     cursor.execute(query)
+    # Confirmar transaccion
     connection.commit()
     print("Consulta ejecutada exitosamente")
+    # Retornar filas si es una consulta con resultados
     if cursor.description:
         return cursor.fetchall()
     return []
@@ -61,6 +73,7 @@ def execute_query(connection, query):
 
 # Función para validar disponibilidad del archivo fuente y descargarlo si no existe
 def ensure_dataset_file():
+    """Verifica el dataset local y lo descarga si no existe."""
     data_root = os.getenv("DATASET_ROOT", "./data/Diabetes")
     data_filename = os.getenv("DATASET_FILENAME", "Diabetes.csv")
     data_url = os.getenv(
@@ -68,6 +81,7 @@ def ensure_dataset_file():
         "https://docs.google.com/uc?export=download&confirm={{VALUE}}&id=1k5-1caezQ3zWJbKaiMULTGq-3sz6uThC",
     )
 
+    # Crear carpeta local si no existe
     os.makedirs(data_root, exist_ok=True)
     data_filepath = os.path.join(data_root, data_filename)
 
@@ -81,6 +95,7 @@ def ensure_dataset_file():
         print(f"Descargando dataset desde {data_url} ...")
         response = requests.get(data_url, allow_redirects=True, stream=True)
         response.raise_for_status()
+        # Escribir en disco por chunks
         with open(data_filepath, "wb") as file_handle:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
                 if chunk:
@@ -93,9 +108,12 @@ def ensure_dataset_file():
 
 
 def read_diabetes_batch(data_filepath, batch_size, offset):
+    """Lee un batch del CSV usando offset y tamano fijo."""
+    # Validar archivo fuente
     if not data_filepath or not os.path.isfile(data_filepath):
         return pd.DataFrame(), offset
 
+    # Configurar filas a omitir para simular ingesta incremental
     skiprows = range(1, offset + 1) if offset > 0 else None
     df = pd.read_csv(data_filepath, skiprows=skiprows, nrows=batch_size)
     if df.empty:
@@ -107,6 +125,8 @@ def read_diabetes_batch(data_filepath, batch_size, offset):
 
 # Función para eliminar una tabla si existe
 def delete_table_if_exists(connection, table_name):
+    """Elimina una tabla si existe en la base de datos."""
+    # Ejecutar drop de forma segura
     query = f"DROP TABLE IF EXISTS {table_name}"
     execute_query(connection, query)
     print(f"Tabla {table_name} eliminada (si existía)")
@@ -114,6 +134,7 @@ def delete_table_if_exists(connection, table_name):
 
 # Función para crear la tabla cruda del dataset diabetic_data
 def create_table_raw(connection, table_name):
+    """Crea la tabla raw con el esquema del dataset de diabetes."""
     # Crear tabla con esquema apropiado para el dataset diabetic_data, permitiendo valores nulos
     query = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
@@ -188,12 +209,14 @@ def create_table_cleaned(
     target_name="readmitted",
     target_type="VARCHAR(16)",
 ):
+    """Crea la tabla limpia con columnas de features dinamicas."""
     # Sanitizar nombres de columnas para compatibilidad con PostgreSQL
     sanitized_cols = [
         name.replace("__", "_").replace(" ", "_").replace("-", "_")
         for name in feature_names
     ]
     feature_columns = ", ".join([f'"{col}" DOUBLE PRECISION' for col in sanitized_cols])
+    # Construir DDL dinamico
     query = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
         id SERIAL PRIMARY KEY,
@@ -209,6 +232,8 @@ def create_table_cleaned(
 
 
 def create_split_table(connection, table_name):
+    """Crea la tabla para registrar el split train/test por registro."""
+    # Crear estructura si no existe
     query = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
         source_record_id VARCHAR(64) PRIMARY KEY,
@@ -220,6 +245,8 @@ def create_split_table(connection, table_name):
 
 
 def create_processed_batches_table(connection, table_name):
+    """Crea la tabla de auditoria de batches procesados."""
+    # Crear estructura si no existe
     query = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
         batch_id INT NOT NULL,
@@ -241,8 +268,11 @@ def assign_dataset_split(
     test_size=0.2,
     random_state=42,
 ):
+    """Asigna train/test de forma determinista y persiste el split."""
+    # Garantizar tabla de split
     create_split_table(connection, split_table)
     cursor = connection.cursor()
+    # Recuperar registros sin asignacion previa
     cursor.execute(
         f"""
         SELECT r.source_record_id
@@ -258,6 +288,7 @@ def assign_dataset_split(
         print("No hay nuevos registros para asignar a train/test.")
         return 0
 
+    # Determinar asignacion usando hashing estable
     assigned_at = datetime.utcnow()
     test_threshold = int(test_size * 10000)
     rows = []
@@ -268,6 +299,7 @@ def assign_dataset_split(
         dataset = "test" if bucket < test_threshold else "train"
         rows.append((source_id, dataset, assigned_at))
 
+    # Insertar asignaciones nuevas
     cursor.executemany(
         f"""
         INSERT INTO {split_table} (source_record_id, dataset, assigned_at)
@@ -284,6 +316,7 @@ def assign_dataset_split(
 def insert_raw_diabetic_data(
     connection, table_name, df=None, batch_id=None, data_source=None
 ):
+    """Inserta datos crudos de diabetes en la tabla raw con metadatos."""
     if df is None or df.empty:
         print(
             "No se cargaron datos desde el archivo fuente o el DataFrame está vacío. No se insertarán datos en PostgreSQL."
@@ -292,6 +325,7 @@ def insert_raw_diabetic_data(
     else:
         print(f"Cargando datos: {len(df)} filas, {len(df.columns)} columnas...")
 
+        # Columnas esperadas del dataset
         data_columns = [
             "encounter_id",
             "patient_nbr",
@@ -345,15 +379,18 @@ def insert_raw_diabetic_data(
             "readmitted",
         ]
 
+        # Normalizar nombres de columnas del CSV
         df = df.copy()
         if "A1Cresult" in df.columns and "a1cresult" not in df.columns:
             df = df.rename(columns={"A1Cresult": "a1cresult"})
         if "diabetesMed" in df.columns and "diabetesmed" not in df.columns:
             df = df.rename(columns={"diabetesMed": "diabetesmed"})
+        # Completar columnas faltantes con None
         for col in data_columns:
             if col not in df.columns:
                 df[col] = None
 
+        # Agregar metadatos de carga
         load_timestamp = datetime.utcnow()
         df["batch_id"] = batch_id
         df["load_timestamp"] = load_timestamp
@@ -364,6 +401,7 @@ def insert_raw_diabetic_data(
         else:
             df["source_record_id"] = None
 
+        # Calcular hash por fila para trazabilidad
         df["row_hash"] = (
             df[data_columns]
             .astype(str)
@@ -406,6 +444,8 @@ def insert_raw_diabetic_data(
 
 # Función para cargar datos desde la base de datos PostgreSQL
 def load_data_from_db(connection, table_name):
+    """Carga una tabla completa en un DataFrame y usa id como indice."""
+    # Ejecutar consulta
     query = f"SELECT * FROM {table_name}"
     cursor = connection.cursor()
     cursor.execute(query)
@@ -431,6 +471,7 @@ def preprocess_and_insert(
     test_size=0.2,
     random_state=42,
 ):
+    """Preprocesa datos, versiona el preprocessor y carga la tabla limpia."""
     # 1. Cargar datos crudos desde PostgreSQL con asignacion train/test
     query = f"""
         SELECT r.*, s.dataset
