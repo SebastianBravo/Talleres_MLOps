@@ -8,6 +8,7 @@ from utils.db_schema import create_table_raw
 from utils.dataset_io import ensure_dataset_file, read_diabetes_batch
 from utils.ingestion import insert_raw_diabetic_data, assign_dataset_split
 from utils.preprocess import preprocess_and_insert
+from utils.training import train_and_register_models
 
 
 DATA_BATCH_SIZE = 15000
@@ -144,6 +145,36 @@ def preprocess_batch(**context):
     )
     close_db_connection(connection)
 
+
+def train_models(**context):
+    """Entrena modelos con datos procesados y registra en MLflow."""
+    # Entrenar solo si hay un batch nuevo
+    batch_number = context["ti"].xcom_pull(
+        task_ids="load_raw_batch", key="batch_number"
+    )
+    if not batch_number:
+        print("No hay batch nuevo para entrenar.")
+        return
+
+    last_trained = int(Variable.get("diabetic_last_trained_batch", default_var=0))
+    if batch_number <= last_trained:
+        print("El batch ya fue entrenado previamente. Se omite reentrenamiento.")
+        return
+
+    # Entrenar y promover el mejor modelo
+    connection = connect_to_db()
+    train_and_register_models(
+        connection,
+        cleaned_table="diabetic_data_cleaned",
+        batch_id=batch_number,
+        experiment_name="diabetic-readmission",
+        registered_model_name="diabetic-readmission-model",
+        primary_metric_name="recall_lt30",
+    )
+    close_db_connection(connection)
+    Variable.set("diabetic_last_trained_batch", batch_number)
+
+
 # Definición del DAG principal
 with DAG(
     dag_id="data_dag",
@@ -172,5 +203,8 @@ with DAG(
     # Tarea 5: Preprocesar y versionar batch
     t5 = PythonOperator(task_id="preprocess_batch", python_callable=preprocess_batch)
 
-    # Flujo principal: crear tablas -> validar archivo -> cargar batch -> asignar split -> preprocesar
-    t1 >> t2 >> t3 >> t4 >> t5
+    # Tarea 6: Entrenar y registrar modelos en MLflow
+    t6 = PythonOperator(task_id="train_models", python_callable=train_models)
+
+    # Flujo principal: crear tablas -> validar archivo -> cargar batch -> asignar split -> preprocesar -> entrenar
+    t1 >> t2 >> t3 >> t4 >> t5 >> t6

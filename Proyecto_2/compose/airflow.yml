@@ -24,9 +24,11 @@ x-airflow-common:
     # API_URL: http://api-data:80
     # API_GROUP_NUMBER: 7
     MINIO_ENDPOINT: http://minio:9000
+    MLFLOW_S3_ENDPOINT_URL: http://minio:9000
     AWS_ACCESS_KEY_ID: minioadmin
     AWS_SECRET_ACCESS_KEY: minioadmin
     AWS_DEFAULT_REGION: us-east-1
+    MLFLOW_TRACKING_URI: http://mlflow:5000
   volumes:
     - ${AIRFLOW_PROJ_DIR:-./Airflow}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-./Airflow}/logs:/opt/airflow/logs

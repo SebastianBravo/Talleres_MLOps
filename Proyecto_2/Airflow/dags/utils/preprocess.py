@@ -15,6 +15,22 @@ from .db_schema import (
 )
 from .storage_utils import connect_to_minio
 
+from botocore.exceptions import ClientError
+
+
+def ensure_bucket_exists(s3_client, bucket_name):
+    try:
+        s3_client.head_bucket(Bucket=bucket_name)
+        print(f"El bucket '{bucket_name}' ya existe en MinIO")
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code")
+
+        if error_code in ["404", "NoSuchBucket"]:
+            print(f"El bucket '{bucket_name}' no existe. Creando bucket...")
+            s3_client.create_bucket(Bucket=bucket_name)
+            print(f"Bucket '{bucket_name}' creado en MinIO")
+        else:
+            raise
 
 def preprocess_and_insert(
     connection,
@@ -200,12 +216,7 @@ def preprocess_and_insert(
 
     # 9. Guardar el preprocesador en MinIO (version por batch)
     minio_client = connect_to_minio()
-    if not minio_client.list_buckets(Prefix=bucket)["Buckets"]:
-        print(f"El bucket '{bucket}' no existe. Creando bucket...")
-        minio_client.create_bucket(Bucket=bucket)
-        print(f"Bucket '{bucket}' creado en MinIO")
-    else:
-        print(f"El bucket '{bucket}' ya existe en MinIO")
+    ensure_bucket_exists(minio_client, bucket)
 
     # Generar version del preprocesador
     processed_at = datetime.utcnow()

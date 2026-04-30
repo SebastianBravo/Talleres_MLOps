@@ -22,7 +22,7 @@ include:
   - compose/redis.yml
   - compose/airflow.yml
   - compose/adminer.yml
+  - compose/mlflow.yml
   # - compose/data_api.yml
   # - compose/jupyterlab.yml
-  # - compose/model_training.yml
   # - compose/inference_api.yml
