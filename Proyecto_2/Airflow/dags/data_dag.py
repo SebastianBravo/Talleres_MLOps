@@ -11,6 +11,8 @@ from db_utils import (
     ensure_dataset_file,
     read_diabetes_batch,
     insert_raw_diabetic_data,
+    assign_dataset_split,
+    preprocess_and_insert,
 )
 
 
@@ -93,6 +95,7 @@ def load_raw_batch(**context):
     close_db_connection(connection)
     Variable.set("diabetic_data_offset", next_offset)
     Variable.set("diabetic_data_batch_number", batch_number)
+    context["ti"].xcom_push(key="batch_number", value=batch_number)
 
     if next_offset >= total_rows:
         Variable.set("diabetic_data_complete", True)
@@ -100,6 +103,38 @@ def load_raw_batch(**context):
     else:
         Variable.set("diabetic_data_complete", False)
         print(f"Progreso de ingesta: {next_offset}/{total_rows}")
+
+
+def assign_dataset(**context):
+    connection = connect_to_db()
+    assign_dataset_split(
+        connection,
+        raw_table="diabetic_data_raw",
+        split_table="diabetic_data_split",
+        test_size=0.2,
+        random_state=42,
+    )
+    close_db_connection(connection)
+
+
+def preprocess_batch(**context):
+    batch_number = context["ti"].xcom_pull(
+        task_ids="load_raw_batch", key="batch_number"
+    )
+    if not batch_number:
+        print("No hay batch nuevo para preprocesar.")
+        return
+    connection = connect_to_db()
+    preprocess_and_insert(
+        connection,
+        raw_table="diabetic_data_raw",
+        cleaned_table="diabetic_data_cleaned",
+        split_table="diabetic_data_split",
+        batch_id=batch_number,
+        bucket="diabetic-project",
+        preprocessor_path="preprocessor",
+    )
+    close_db_connection(connection)
 
 
 # def load_raw_data(**context):
@@ -220,6 +255,12 @@ with DAG(
     # Tarea 3: Carga incremental por lotes
     t3 = PythonOperator(task_id="load_raw_batch", python_callable=load_raw_batch)
 
+    # Tarea 4: Asignar datasets train/test
+    t4 = PythonOperator(task_id="assign_dataset", python_callable=assign_dataset)
+
+    # Tarea 5: Preprocesar y versionar batch
+    t5 = PythonOperator(task_id="preprocess_batch", python_callable=preprocess_batch)
+
     # # Tarea 2: Cargar datos crudos desde la API
     # t2 = PythonOperator(task_id="load_raw_data", python_callable=load_raw_data)
 
@@ -242,7 +283,7 @@ with DAG(
     # t4 = PythonOperator(task_id="pause_dag", python_callable=pause_dag)
 
     # Flujo: crear tablas -> cargar datos -> (si hay nuevos, preprocesar) y (si se completó, pausar)
-    t1 >> t2 >> t3
+    t1 >> t2 >> t3 >> t4 >> t5
     # t1 >> t2
     # t2 >> t2_check_preprocess >> t3
     # t2 >> t2_check_pause >> t4
