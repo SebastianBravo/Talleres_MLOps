@@ -1,19 +1,13 @@
 import os
 from datetime import datetime, timedelta
 from airflow import DAG
-from airflow.operators.python import PythonOperator, ShortCircuitOperator
-from airflow.models import DagModel, Variable
-from airflow.utils.session import create_session
-from db_utils import (
-    connect_to_db,
-    close_db_connection,
-    create_table_raw,
-    ensure_dataset_file,
-    read_diabetes_batch,
-    insert_raw_diabetic_data,
-    assign_dataset_split,
-    preprocess_and_insert,
-)
+from airflow.operators.python import PythonOperator
+from airflow.models import Variable
+from utils.db_connection import connect_to_db, close_db_connection
+from utils.db_schema import create_table_raw
+from utils.dataset_io import ensure_dataset_file, read_diabetes_batch
+from utils.ingestion import insert_raw_diabetic_data, assign_dataset_split
+from utils.preprocess import preprocess_and_insert
 
 
 DATA_BATCH_SIZE = 15000
