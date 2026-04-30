@@ -1,24 +1,41 @@
+import os
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
-from airflow.models import DagModel
+from airflow.models import DagModel, Variable
 from airflow.utils.session import create_session
 from db_utils import (
     connect_to_db,
     close_db_connection,
     create_table_raw,
-    get_data_from_api,
-    insert_raw_covertype_data,
-    preprocess_and_insert,
+    ensure_dataset_file,
+    read_diabetes_batch,
+    insert_raw_diabetic_data,
 )
+
+
+DATA_BATCH_SIZE = 15000
+
+
+def get_total_rows(data_filepath):
+    with open(data_filepath, "r", encoding="utf-8") as file_handle:
+        total_lines = sum(1 for _ in file_handle)
+    return max(total_lines - 1, 0)
 
 
 def create_tables():
     """Crea las tablas necesarias en la base de datos si no existen."""
-    # Verificar qué tablas existen actualmente
+    # Consulta catalogo para evitar recrear tablas existentes.
     connection = connect_to_db()
     cursor = connection.cursor()
-    cursor.execute("SHOW TABLES")
+    cursor.execute(
+        """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+                AND table_type = 'BASE TABLE'
+            """
+    )
     tables = cursor.fetchall()
     close_db_connection(connection)
 
@@ -32,6 +49,57 @@ def create_tables():
     else:
         print(f"Tablas existentes: {[t[0] for t in tables]}")
         print("No se crearán tablas nuevas para evitar conflictos")
+
+
+def validate_source_file():
+    # Asegura que el archivo fuente exista (o lo descarga).
+    data_filepath = ensure_dataset_file()
+    if not data_filepath or not os.path.isfile(data_filepath):
+        raise FileNotFoundError("No se encontró el archivo fuente del dataset.")
+    return data_filepath
+
+
+def load_raw_batch(**context):
+    # Lee el siguiente lote y lo inserta en la tabla raw.
+    data_filepath = context["ti"].xcom_pull(task_ids="validate_source_file")
+    if not data_filepath:
+        print("No hay archivo fuente disponible. Se omite la carga.")
+        return
+
+    # Offset persistente para simulacion incremental.
+    offset = int(Variable.get("diabetic_data_offset", default_var=0))
+    total_rows = int(Variable.get("diabetic_data_total_rows", default_var=0))
+    if total_rows == 0:
+        total_rows = get_total_rows(data_filepath)
+        Variable.set("diabetic_data_total_rows", total_rows)
+        print(f"Total de filas detectadas en el CSV: {total_rows}")
+
+    df, next_offset = read_diabetes_batch(data_filepath, DATA_BATCH_SIZE, offset)
+    if df.empty:
+        print("No hay nuevos registros por cargar.")
+        Variable.set("diabetic_data_complete", True)
+        return
+
+    # Identificador del lote para trazabilidad.
+    batch_number = int(Variable.get("diabetic_data_batch_number", default_var=0)) + 1
+    connection = connect_to_db()
+    insert_raw_diabetic_data(
+        connection,
+        "diabetic_data_raw",
+        df,
+        batch_id=batch_number,
+        data_source=data_filepath,
+    )
+    close_db_connection(connection)
+    Variable.set("diabetic_data_offset", next_offset)
+    Variable.set("diabetic_data_batch_number", batch_number)
+
+    if next_offset >= total_rows:
+        Variable.set("diabetic_data_complete", True)
+        print("Todos los datos fueron ingestados.")
+    else:
+        Variable.set("diabetic_data_complete", False)
+        print(f"Progreso de ingesta: {next_offset}/{total_rows}")
 
 
 # def load_raw_data(**context):
@@ -144,6 +212,14 @@ with DAG(
     # Tarea 1: Crear tablas si no existen
     t1 = PythonOperator(task_id="create_tables", python_callable=create_tables)
 
+    # Tarea 2: Validar disponibilidad del archivo fuente
+    t2 = PythonOperator(
+        task_id="validate_source_file", python_callable=validate_source_file
+    )
+
+    # Tarea 3: Carga incremental por lotes
+    t3 = PythonOperator(task_id="load_raw_batch", python_callable=load_raw_batch)
+
     # # Tarea 2: Cargar datos crudos desde la API
     # t2 = PythonOperator(task_id="load_raw_data", python_callable=load_raw_data)
 
@@ -166,7 +242,7 @@ with DAG(
     # t4 = PythonOperator(task_id="pause_dag", python_callable=pause_dag)
 
     # Flujo: crear tablas -> cargar datos -> (si hay nuevos, preprocesar) y (si se completó, pausar)
-    t1
+    t1 >> t2 >> t3
     # t1 >> t2
     # t2 >> t2_check_preprocess >> t3
     # t2 >> t2_check_pause >> t4

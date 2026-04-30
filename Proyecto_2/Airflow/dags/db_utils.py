@@ -1,4 +1,7 @@
 import os
+import hashlib
+from datetime import datetime
+
 import boto3
 import requests
 import psycopg2
@@ -56,40 +59,50 @@ def execute_query(connection, query):
     return []
 
 
-# Función para obtener datos desde una fuente FastAPI (API_URL)
-def get_data_from_api():
-    url = f"{os.getenv('API_URL')}/data"
-    params = {"group_number": os.getenv("API_GROUP_NUMBER")}
+# Función para validar disponibilidad del archivo fuente y descargarlo si no existe
+def ensure_dataset_file():
+    data_root = os.getenv("DATASET_ROOT", "./data/Diabetes")
+    data_filename = os.getenv("DATASET_FILENAME", "Diabetes.csv")
+    data_url = os.getenv(
+        "DATASET_URL",
+        "https://docs.google.com/uc?export=download&confirm={{VALUE}}&id=1k5-1caezQ3zWJbKaiMULTGq-3sz6uThC",
+    )
 
-    # Realizar la petición GET a la API
+    os.makedirs(data_root, exist_ok=True)
+    data_filepath = os.path.join(data_root, data_filename)
+
+    # Reusar archivo existente para evitar descargas innecesarias.
+    if os.path.isfile(data_filepath):
+        print(f"Archivo fuente disponible: {data_filepath}")
+        return data_filepath
+
+    # Descargar el dataset si no existe localmente.
     try:
-        print(f"Obteniendo datos de la API en {url} ...")
-        response = requests.get(url, params=params)
-        response.raise_for_status()  # Verificar errores HTTP
-        data = response.json()
+        print(f"Descargando dataset desde {data_url} ...")
+        response = requests.get(data_url, allow_redirects=True, stream=True)
+        response.raise_for_status()
+        with open(data_filepath, "wb") as file_handle:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    file_handle.write(chunk)
+        print(f"Dataset descargado en: {data_filepath}")
+        return data_filepath
+    except requests.exceptions.RequestException as exc:
+        print(f"Error al descargar el dataset: {exc}")
+        return None
 
-        print(f"Número de batch: {data['batch_number']}")
-        print(f"Número de grupo: {data['group_number']}")
-        print(f"Datos obtenidos de la API: {len(data['data'])} registros")
-        return pd.DataFrame(data["data"])
-    except requests.exceptions.RequestException as e:
-        response_obj = getattr(e, "response", None)
-        if response_obj is not None:
-            try:
-                data = response_obj.json()
-                if (
-                    data.get("detail")
-                    == "Ya se recolectó toda la información minima necesaria"
-                ):
-                    print(
-                        "Ya se recolectó toda la información mínima necesaria. No se cargarán nuevos datos."
-                    )
-                    return pd.DataFrame()
-            except ValueError:
-                pass
 
-        print(f"Error al cargar datos desde la API: {e}")
-        return None  # Retornar None en caso de error
+def read_diabetes_batch(data_filepath, batch_size, offset):
+    if not data_filepath or not os.path.isfile(data_filepath):
+        return pd.DataFrame(), offset
+
+    skiprows = range(1, offset + 1) if offset > 0 else None
+    df = pd.read_csv(data_filepath, skiprows=skiprows, nrows=batch_size)
+    if df.empty:
+        return df, offset
+
+    next_offset = offset + len(df)
+    return df, next_offset
 
 
 # Función para eliminar una tabla si existe
@@ -105,10 +118,12 @@ def create_table_raw(connection, table_name):
     query = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
         id SERIAL PRIMARY KEY,
-        load_batch VARCHAR(64) NULL,
+        batch_id INT NULL,
         load_timestamp TIMESTAMP NOT NULL,
         data_source VARCHAR(128) NULL,
         record_status VARCHAR(32) NULL,
+        source_record_id VARCHAR(64) NULL,
+        row_hash VARCHAR(64) NULL,
         encounter_id BIGINT NULL,
         patient_nbr BIGINT NULL,
         race VARCHAR(32) NULL,
@@ -187,14 +202,95 @@ def create_table_cleaned(connection, table_name, feature_names):
 
 
 # Función para insertar datos crudos del dataset covertype en la tabla
-def insert_raw_covertype_data(connection, table_name, df=None):
+def insert_raw_diabetic_data(
+    connection, table_name, df=None, batch_id=None, data_source=None
+):
     if df is None or df.empty:
         print(
-            "No se cargaron datos desde la API o el DataFrame está vacío. No se insertarán datos en PostgreSQL."
+            "No se cargaron datos desde el archivo fuente o el DataFrame está vacío. No se insertarán datos en PostgreSQL."
         )
         return
     else:
         print(f"Cargando datos: {len(df)} filas, {len(df.columns)} columnas...")
+
+        data_columns = [
+            "encounter_id",
+            "patient_nbr",
+            "race",
+            "gender",
+            "age",
+            "weight",
+            "admission_type_id",
+            "discharge_disposition_id",
+            "admission_source_id",
+            "time_in_hospital",
+            "payer_code",
+            "medical_specialty",
+            "num_lab_procedures",
+            "num_procedures",
+            "num_medications",
+            "number_outpatient",
+            "number_emergency",
+            "number_inpatient",
+            "diag_1",
+            "diag_2",
+            "diag_3",
+            "number_diagnoses",
+            "max_glu_serum",
+            "a1cresult",
+            "metformin",
+            "repaglinide",
+            "nateglinide",
+            "chlorpropamide",
+            "glimepiride",
+            "acetohexamide",
+            "glipizide",
+            "glyburide",
+            "tolbutamide",
+            "pioglitazone",
+            "rosiglitazone",
+            "acarbose",
+            "miglitol",
+            "troglitazone",
+            "tolazamide",
+            "examide",
+            "citoglipton",
+            "insulin",
+            "glyburide-metformin",
+            "glipizide-metformin",
+            "glimepiride-pioglitazone",
+            "metformin-rosiglitazone",
+            "metformin-pioglitazone",
+            "change",
+            "diabetesmed",
+            "readmitted",
+        ]
+
+        df = df.copy()
+        if "A1Cresult" in df.columns and "a1cresult" not in df.columns:
+            df = df.rename(columns={"A1Cresult": "a1cresult"})
+        if "diabetesMed" in df.columns and "diabetesmed" not in df.columns:
+            df = df.rename(columns={"diabetesMed": "diabetesmed"})
+        for col in data_columns:
+            if col not in df.columns:
+                df[col] = None
+
+        load_timestamp = datetime.utcnow()
+        df["batch_id"] = batch_id
+        df["load_timestamp"] = load_timestamp
+        df["data_source"] = data_source
+        df["record_status"] = "new"
+        if "encounter_id" in df.columns:
+            df["source_record_id"] = df["encounter_id"].astype(str)
+        else:
+            df["source_record_id"] = None
+
+        df["row_hash"] = (
+            df[data_columns]
+            .astype(str)
+            .agg("|".join, axis=1)
+            .apply(lambda value: hashlib.md5(value.encode("utf-8")).hexdigest())
+        )
 
         # Reemplazar valores NaN con None para manejar NULLs correctamente en PostgreSQL
         df = df.replace({float("nan"): None})
@@ -202,14 +298,24 @@ def insert_raw_covertype_data(connection, table_name, df=None):
         cursor = connection.cursor()
 
         # Preparar la consulta SQL para insertar datos
-        query = f"""INSERT INTO {table_name}
-            (elevation, aspect, slope, horizontal_distance_to_hydrology,
-            vertical_distance_to_hydrology, horizontal_distance_to_roadways, hillshade_9am, hillshade_noon, hillshade_3pm, horizontal_distance_to_fire_points,
-            wilderness_area, soil_type, cover_type)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+        insert_columns = [
+            "batch_id",
+            "load_timestamp",
+            "data_source",
+            "record_status",
+            "source_record_id",
+            "row_hash",
+        ] + data_columns
+
+        quoted_columns = [f'"{col}"' for col in insert_columns]
+        placeholders = ", ".join(["%s"] * len(insert_columns))
+        query = (
+            f"INSERT INTO {table_name} (" + ", ".join(quoted_columns) + ")"
+            f" VALUES ({placeholders})"
+        )
 
         # Convertir DataFrame a lista de tuplas para la inserción
-        val = [tuple(row) for row in df.values]
+        val = [tuple(row) for row in df[insert_columns].values]
 
         # Ejecutar la consulta para múltiples filas
         cursor.executemany(query, val)
