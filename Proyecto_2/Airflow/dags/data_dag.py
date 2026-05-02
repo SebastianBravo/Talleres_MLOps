@@ -250,6 +250,35 @@ def train_models(**context):
     Variable.set("diabetic_last_trained_batch", batch_number)
 
 
+def reload_api_model(**context):
+    """Recarga el modelo productivo en la API de inferencia."""
+
+    from airflow.models import Variable
+    from utils.inference_api import reload_inference_api
+
+    ti = context["ti"]
+
+    batch_number = ti.xcom_pull(
+        task_ids="load_raw_batch",
+        key="batch_number",
+    )
+
+    if not batch_number:
+        print("No hay batch nuevo. Se omite recarga de la API.")
+        return
+
+    last_trained = int(Variable.get("diabetic_last_trained_batch", default_var=0))
+
+    if int(batch_number) != last_trained:
+        print(
+            "El batch actual no coincide con el último batch entrenado. "
+            "Se omite recarga de la API."
+        )
+        return
+
+    reload_inference_api()
+
+
 default_args = {
     "owner": "airflow",
     "retries": 1,
@@ -261,14 +290,14 @@ with DAG(
     dag_id=DAG_ID,
     description=(
         "DAG para recolectar datos, cargarlos por lotes, "
-        "preprocesarlos y entrenar modelos."
+        "preprocesarlos, entrenar modelos y recargar la API de inferencia."
     ),
     default_args=default_args,
     schedule=timedelta(minutes=2),  # Solo para pruebas
     start_date=datetime(2026, 2, 24),
     max_active_runs=1,
     catchup=False,
-    tags=["diabetes", "ml", "training"],
+    tags=["diabetes", "ml", "training", "inference"],
 ) as dag:
     create_tables_task = PythonOperator(
         task_id="create_tables",
@@ -300,6 +329,11 @@ with DAG(
         python_callable=train_models,
     )
 
+    reload_api_model_task = PythonOperator(
+        task_id="reload_api_model",
+        python_callable=reload_api_model,
+    )
+
     (
         create_tables_task
         >> validate_source_file_task
@@ -307,4 +341,5 @@ with DAG(
         >> assign_dataset_task
         >> preprocess_batch_task
         >> train_models_task
+        >> reload_api_model_task
     )

@@ -24,6 +24,6 @@ include:
   - compose/airflow-slim.yml
   - compose/adminer.yml
   - compose/mlflow.yml
-  # - compose/data_api.yml
+  - compose/api.yml
   # - compose/jupyterlab.yml
   # - compose/inference_api.yml

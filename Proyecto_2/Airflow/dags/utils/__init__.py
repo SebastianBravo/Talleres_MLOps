@@ -13,6 +13,7 @@ from .db_schema import (
 from .ingestion import insert_raw_diabetic_data, assign_dataset_split
 from .preprocess import preprocess_and_insert
 from .training import train_and_register_models
+from .inference_api import reload_inference_api
 
 __all__ = [
     "connect_to_db",
@@ -30,4 +31,5 @@ __all__ = [
     "assign_dataset_split",
     "preprocess_and_insert",
     "train_and_register_models",
+    "reload_inference_api",
 ]
