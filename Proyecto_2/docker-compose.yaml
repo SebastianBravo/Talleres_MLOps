@@ -19,8 +19,9 @@ include:
   - compose/minio.yml
   - compose/postgres.yml
   - compose/postgres-dataset.yml
-  - compose/redis.yml
-  - compose/airflow.yml
+  # - compose/redis.yml
+  # - compose/airflow.yml
+  - compose/airflow-slim.yml
   - compose/adminer.yml
   - compose/mlflow.yml
   # - compose/data_api.yml

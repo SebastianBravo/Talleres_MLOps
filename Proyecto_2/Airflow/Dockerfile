@@ -1,4 +1,4 @@
-FROM apache/airflow:2.11.1
+FROM apache/airflow:slim-2.11.1
 
 # Copy dependency files
 COPY requirements.txt /

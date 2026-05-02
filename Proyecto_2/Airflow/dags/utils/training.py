@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import StratifiedKFold, ParameterGrid
+from sklearn.model_selection import ParameterGrid
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -166,16 +166,16 @@ def train_and_register_models(
 
     # Definir modelos candidatos y grids pequenos
     candidates = [
-        (
-            "logistic",
-            LogisticRegression,
-            {
-                "C": [0.1, 1.0],
-                "max_iter": [1000],
-                "solver": ["lbfgs"],
-                "class_weight": ["balanced"],
-            },
-        ),
+        # (
+        #     "logistic",
+        #     LogisticRegression,
+        #     {
+        #         "C": [0.1, 1.0],
+        #         "max_iter": [1000],
+        #         "solver": ["lbfgs"],
+        #         "class_weight": ["balanced"],
+        #     },
+        # ),
         (
             "random_forest",
             RandomForestClassifier,
@@ -232,63 +232,12 @@ def train_and_register_models(
             mlflow.set_tag("primary_metric_justification", primary_metric_justification)
 
             grid = list(ParameterGrid(param_grid))
-            skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-
             for config_idx, params in enumerate(grid, start=1):
                 config_name = f"{model_name}{batch_suffix}_config_{config_idx:02d}"
                 with mlflow.start_run(run_name=config_name, nested=True):
                     mlflow.set_tag("group", "config")
                     mlflow.set_tag("model_name", model_name)
                     mlflow.log_params(params)
-
-                    fold_metrics = []
-                    for fold_idx, (tr_idx, val_idx) in enumerate(
-                        skf.split(X_train, y_train), start=1
-                    ):
-                        X_tr = X_train.iloc[tr_idx]
-                        y_tr = y_train.iloc[tr_idx]
-                        X_val = X_train.iloc[val_idx]
-                        y_val = y_train.iloc[val_idx]
-
-                        fold_model = model_cls(**params)
-                        fold_model.fit(X_tr, y_tr)
-
-                        y_val_pred = fold_model.predict(X_val)
-                        y_val_prob = None
-                        if hasattr(fold_model, "predict_proba"):
-                            try:
-                                y_val_prob = fold_model.predict_proba(X_val)
-                            except Exception:
-                                y_val_prob = None
-
-                        metrics, class_report = _compute_metrics(
-                            y_val, y_val_pred, y_val_prob
-                        )
-                        fold_metrics.append(metrics)
-
-                        fold_run_name = f"{config_name}_fold{fold_idx}"
-                        with mlflow.start_run(run_name=fold_run_name, nested=True):
-                            mlflow.set_tag("group", "fold")
-                            mlflow.set_tag("model_name", model_name)
-                            mlflow.set_tag("config_id", config_name)
-                            mlflow.set_tag("fold", fold_idx)
-                            mlflow.log_metrics(metrics)
-
-                            fold_report_path = f"classification_report_fold{fold_idx}.json"
-                            with open(
-                                fold_report_path, "w", encoding="utf-8"
-                            ) as report_file:
-                                json.dump(
-                                    class_report, report_file, indent=2, ensure_ascii=False
-                                )
-                            mlflow.log_artifact(fold_report_path)
-
-                    avg_metrics = {}
-                    for key in fold_metrics[0].keys():
-                        avg_metrics[f"cv_{key}"] = float(
-                            np.mean([fm.get(key, 0.0) for fm in fold_metrics])
-                        )
-                    mlflow.log_metrics(avg_metrics)
 
                     # Entrenar modelo final con todo el train
                     final_model = model_cls(**params)
@@ -322,11 +271,11 @@ def train_and_register_models(
                         pipeline_model = Pipeline(
                             steps=[("preprocess", preprocessor), ("model", final_model)]
                         )
-                        mlflow.sklearn.log_model(pipeline_model, artifact_path="model")
+                        mlflow.sklearn.log_model(pipeline_model, name="model")
                     else:
-                        mlflow.sklearn.log_model(final_model, artifact_path="model")
+                        mlflow.sklearn.log_model(final_model, name="model")
 
-                    current_metric = avg_metrics.get(f"cv_{primary_metric_name}")
+                    current_metric = test_metrics.get(primary_metric_name)
                     if current_metric is not None:
                         if best_metric is None or current_metric > best_metric:
                             best_metric = current_metric
