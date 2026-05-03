@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    kompose.cmd: C:\Users\sebas\AppData\Local\Microsoft\WinGet\Packages\Kubernetes.kompose_Microsoft.Winget.Source_8wekyb3d8bbwe\kompose.exe convert -f compose/postgres-dataset.yml -o komposefiles/postgres_dataset/
+    kompose.version: 1.38.0 (a8f5d1cbd)
+  labels:
+    io.kompose.service: postgres-dataset
+  name: postgres-dataset
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      io.kompose.service: postgres-dataset
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        kompose.cmd: C:\Users\sebas\AppData\Local\Microsoft\WinGet\Packages\Kubernetes.kompose_Microsoft.Winget.Source_8wekyb3d8bbwe\kompose.exe convert -f compose/postgres-dataset.yml -o komposefiles/postgres_dataset/
+        kompose.version: 1.38.0 (a8f5d1cbd)
+      labels:
+        io.kompose.service: postgres-dataset
+    spec:
+      containers:
+        - env:
+            - name: POSTGRES_DB
+              value: diabetic_data
+            - name: POSTGRES_PASSWORD
+              value: airflow
+            - name: POSTGRES_USER
+              value: airflow
+          image: postgres:13
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - airflow
+                - -d
+                - diabetic_data
+            failureThreshold: 5
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          name: postgres-dataset
+          ports:
+            - containerPort: 5432
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: postgres-dataset-db-volume
+      restartPolicy: Always
+      volumes:
+        - name: postgres-dataset-db-volume
+          persistentVolumeClaim:
+            claimName: postgres-dataset-db-volume

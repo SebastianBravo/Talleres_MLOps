@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    kompose.cmd: C:\Users\sebas\AppData\Local\Microsoft\WinGet\Packages\Kubernetes.kompose_Microsoft.Winget.Source_8wekyb3d8bbwe\kompose.exe convert -f compose/minio.yml -o komposefiles/minio/
+    kompose.version: 1.38.0 (a8f5d1cbd)
+  labels:
+    io.kompose.service: minio
+  name: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      io.kompose.service: minio
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        kompose.cmd: C:\Users\sebas\AppData\Local\Microsoft\WinGet\Packages\Kubernetes.kompose_Microsoft.Winget.Source_8wekyb3d8bbwe\kompose.exe convert -f compose/minio.yml -o komposefiles/minio/
+        kompose.version: 1.38.0 (a8f5d1cbd)
+      labels:
+        io.kompose.service: minio
+    spec:
+      containers:
+        - args:
+            - server
+            - /data
+            - --console-address
+            - :9001
+          env:
+            - name: MINIO_ROOT_PASSWORD
+              value: minioadmin
+            - name: MINIO_ROOT_USER
+              value: minioadmin
+          image: minio/minio:latest
+          livenessProbe:
+            exec:
+              command:
+                - mc
+                - alias
+                - set
+                - local
+                - http://localhost:9000
+                - minioadmin
+                - minioadmin
+            failureThreshold: 5
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 30
+          name: minio
+          ports:
+            - containerPort: 9000
+              protocol: TCP
+            - containerPort: 9001
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /data
+              name: minio-data
+      restartPolicy: Always
+      volumes:
+        - name: minio-data
+          persistentVolumeClaim:
+            claimName: minio-data

@@ -3,7 +3,9 @@
 
 x-airflow-common:
   &airflow-common
-  build: ${AIRFLOW_PROJ_DIR:-./Airflow}
+  build: 
+    context: ${AIRFLOW_PROJ_DIR:-./Airflow}
+    dockerfile: Dockerfile.Compose
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
