@@ -41,6 +41,16 @@ env:
   - name: MINIO_ENDPOINT
     value: http://minio:9000
 
+  # Variables de conexión a MLflow.
+  - name: MLFLOW_S3_ENDPOINT_URL
+    value: http://minio:9000
+  - name: MLFLOW_TRACKING_URI
+    value: http://mlflow:5000
+
+  # Variable de conexión a API de inferencia.
+  - name: INFERENCE_API_URL
+    value: "http://api:8000"
+
 # Mantener componentes minimos para pruebas locales.
 workers:
   replicas: 1

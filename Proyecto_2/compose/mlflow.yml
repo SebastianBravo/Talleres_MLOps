@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile
     container_name: MLflow
     depends_on:
-      mlflow_db:
+      mlflow-db:
         condition: service_healthy
       minio:
         condition: service_started
@@ -20,7 +20,7 @@ services:
       AWS_SECRET_ACCESS_KEY: minioadmin
     restart: always
 
-  mlflow_db:
+  mlflow-db:
     image: postgres:13
     environment:
       POSTGRES_USER: mlflow

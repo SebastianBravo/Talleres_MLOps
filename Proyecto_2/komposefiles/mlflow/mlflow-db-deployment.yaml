@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    kompose.cmd: C:\Users\sebas\AppData\Local\Microsoft\WinGet\Packages\Kubernetes.kompose_Microsoft.Winget.Source_8wekyb3d8bbwe\kompose.exe convert -f compose/mlflow.yml -f compose/minio.yml -o komposefiles/mlflow/
+    kompose.version: 1.38.0 (a8f5d1cbd)
+  labels:
+    io.kompose.service: mlflow-db
+  name: mlflow-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      io.kompose.service: mlflow-db
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        kompose.cmd: C:\Users\sebas\AppData\Local\Microsoft\WinGet\Packages\Kubernetes.kompose_Microsoft.Winget.Source_8wekyb3d8bbwe\kompose.exe convert -f compose/mlflow.yml -f compose/minio.yml -o komposefiles/mlflow/
+        kompose.version: 1.38.0 (a8f5d1cbd)
+      labels:
+        io.kompose.service: mlflow-db
+    spec:
+      containers:
+        - env:
+            - name: POSTGRES_DB
+              value: mlflow
+            - name: POSTGRES_PASSWORD
+              value: mlflow
+            - name: POSTGRES_USER
+              value: mlflow
+          image: postgres:13
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - mlflow
+                - -d
+                - mlflow
+            failureThreshold: 5
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          name: mlflow-db
+          ports:
+            - containerPort: 5432
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: mlflow-db-volume
+      restartPolicy: Always
+      volumes:
+        - name: mlflow-db-volume
+          persistentVolumeClaim:
+            claimName: mlflow-db-volume

@@ -12,6 +12,6 @@ EXPOSE 5000
 CMD ["mlflow", "server", \
      "--host", "0.0.0.0", \
      "--port", "5000", \
-     "--backend-store-uri", "postgresql+psycopg2://mlflow:mlflow@mlflow_db:5432/mlflow", \
+     "--backend-store-uri", "postgresql+psycopg2://mlflow:mlflow@mlflow-db:5432/mlflow", \
      "--default-artifact-root", "s3://mlflows3/artifacts", \
      "--serve-artifacts"]
