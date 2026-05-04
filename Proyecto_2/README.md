@@ -112,9 +112,9 @@ El despliegue en Kubernetes se hace con dos enfoques:
 ### 1) Construir imagenes personalizadas
 
 ```bash
-docker build --pull --tag airflow-local-dags:0.0.1 /airflow
-docker build --pull --tag mlflow-local:0.0.1 /mlflow
-docker build --pull --tag api-local:0.0.1 /api
+docker build --pull --tag airflow-local-dags:0.0.1 ./airflow
+docker build --pull --tag mlflow-local:0.0.1 ./mlflow
+docker build --pull --tag api-local:0.0.1 ./api
 ```
 
 ### 2) Generar manifiestos con Kompose (si necesitas regenerarlos)
