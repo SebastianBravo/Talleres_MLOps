@@ -6,8 +6,8 @@ airflowVersion: "2.11.1"
 
 images:
   airflow:
-    repository: airflow-local-dags
-    tag: 0.0.1
+    repository: oscarariasback/airflow-dags
+    tag: latest
 
 # # Configuración scheduler
 # config:

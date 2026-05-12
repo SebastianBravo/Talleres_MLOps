@@ -1,0 +1,11 @@
+services:
+  locust:
+    build:
+      context: ../locust
+      dockerfile: Dockerfile
+    container_name: Locust
+    ports:
+      - "8089:8089"
+    depends_on:
+      - api
+    restart: unless-stopped

@@ -119,6 +119,25 @@ def create_split_table(connection, table_name):
     execute_query(connection, query)
 
 
+def create_inference_logs_table(connection, table_name="inference_logs"):
+    """Crea la tabla de registros de inferencias realizadas por la API."""
+    query = f"""
+    CREATE TABLE IF NOT EXISTS {table_name} (
+        request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        requested_at TIMESTAMP NOT NULL,
+        input_data JSONB NOT NULL,
+        prediction VARCHAR(16) NOT NULL,
+        probabilities JSONB,
+        model_name VARCHAR(128),
+        model_version VARCHAR(32),
+        model_alias VARCHAR(64),
+        response_time_ms FLOAT NOT NULL
+    )
+    """
+    execute_query(connection, query)
+    print(f"Tabla {table_name} verificada/creada exitosamente")
+
+
 def create_processed_batches_table(connection, table_name):
     """Crea la tabla de auditoria de batches procesados."""
     # Crear estructura si no existe

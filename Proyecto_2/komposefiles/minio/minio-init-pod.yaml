@@ -9,13 +9,27 @@ metadata:
   name: minio-init
 spec:
   containers:
-    - command:
+    - name: minio-init
+      image: minio/mc:latest
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: MINIO_ROOT_USER
+          valueFrom:
+            secretKeyRef:
+              name: minio-secret
+              key: MINIO_ROOT_USER
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: minio-secret
+              key: MINIO_ROOT_PASSWORD
+      command:
         - /bin/sh
         - -c
         - |
           echo "Waiting for MinIO...";
 
-          until mc alias set local http://minio:9000 minioadmin minioadmin; do
+          until mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do
             echo "MinIO not ready yet...";
             sleep 2;
           done;
@@ -25,6 +39,4 @@ spec:
           mc mb -p local/mlflows3;
           mc anonymous set none local/mlflows3;
           mc mb -p local/diabetic-project;
-      image: minio/mc:latest
-      name: minio-init
   restartPolicy: Never

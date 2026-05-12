@@ -1,11 +1,16 @@
+import json
 import os
-from typing import Optional, Any
+import time
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 import mlflow
 import mlflow.sklearn
 import pandas as pd
-from datetime import datetime, timezone
+import psycopg2
 from fastapi import FastAPI, HTTPException
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ConfigDict, field_validator
 
 
@@ -84,10 +89,12 @@ FEATURE_COLUMNS = NUMERIC_COLUMNS + CATEGORICAL_COLUMNS
 
 
 # =========================
-# FastAPI
+# FastAPI + Prometheus
 # =========================
 
 app = FastAPI(title="Diabetic Readmission Inference API")
+
+Instrumentator().instrument(app).expose(app)
 
 model = None
 
@@ -216,6 +223,82 @@ class DiabeticReadmissionFeatures(BaseModel):
 
 
 # =========================
+# Base de datos — inferencias
+# =========================
+
+def _get_db_connection():
+    return psycopg2.connect(
+        host=os.environ.get("POSTGRES_DATASET_HOST", "postgres-dataset"),
+        port=os.environ.get("POSTGRES_DATASET_PORT", "5432"),
+        user=os.environ.get("POSTGRES_DATASET_USER", "airflow"),
+        password=os.environ.get("POSTGRES_DATASET_PASSWORD", "airflow"),
+        dbname=os.environ.get("POSTGRES_DATASET_DATABASE", "diabetic_data"),
+    )
+
+
+def _ensure_inference_logs_table():
+    """Crea la tabla inference_logs si no existe."""
+    try:
+        conn = _get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS inference_logs (
+                request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                requested_at TIMESTAMP NOT NULL,
+                input_data JSONB NOT NULL,
+                prediction VARCHAR(16) NOT NULL,
+                probabilities JSONB,
+                model_name VARCHAR(128),
+                model_version VARCHAR(32),
+                model_alias VARCHAR(64),
+                response_time_ms FLOAT NOT NULL
+            )
+        """)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("Tabla inference_logs verificada/creada.")
+    except Exception as exc:
+        print(f"No se pudo crear la tabla inference_logs: {exc}")
+
+
+def _log_inference(
+    input_data: dict,
+    prediction: str,
+    probabilities: Optional[dict],
+    response_time_ms: float,
+):
+    """Registra una inferencia en la tabla inference_logs. Falla silenciosamente."""
+    try:
+        conn = _get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO inference_logs
+                (request_id, requested_at, input_data, prediction, probabilities,
+                 model_name, model_version, model_alias, response_time_ms)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                str(uuid.uuid4()),
+                datetime.now(timezone.utc),
+                json.dumps(input_data),
+                prediction,
+                json.dumps(probabilities) if probabilities is not None else None,
+                model_info.get("name"),
+                model_info.get("version"),
+                model_info.get("alias"),
+                response_time_ms,
+            ),
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as exc:
+        print(f"Error al registrar inferencia en BD: {exc}")
+
+
+# =========================
 # Carga del modelo
 # =========================
 
@@ -287,8 +370,10 @@ def load_production_model():
 
         raise
 
+
 @app.on_event("startup")
 def startup():
+    _ensure_inference_logs_table()
     try:
         load_production_model()
     except Exception as exc:
@@ -385,23 +470,34 @@ def predict(features: DiabeticReadmissionFeatures):
         )
 
     try:
-        df = features.to_model_dataframe()
+        start_time = time.time()
 
+        df = features.to_model_dataframe()
         prediction = model.predict(df)[0]
         probabilities = predict_probabilities(df)
 
+        response_time_ms = (time.time() - start_time) * 1000
+
+        _log_inference(
+            input_data=features.model_dump(),
+            prediction=str(prediction),
+            probabilities=probabilities,
+            response_time_ms=response_time_ms,
+        )
+
         response = {
             "prediction": str(prediction),
+            "probabilities": probabilities,
+            "model_name": model_info.get("name"),
             "model_version": model_info.get("version"),
             "model_alias": model_info.get("alias"),
-            "model_name": model_info.get("name"),
+            "response_time_ms": response_time_ms,
         }
-
-        if probabilities is not None:
-            response["probabilities"] = probabilities
 
         return response
 
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -438,8 +534,8 @@ def reload_model():
                 "model_status": model_status,
             },
         )
-    
-    
+
+
 @app.get("/model-info")
 def get_model_info():
     return {

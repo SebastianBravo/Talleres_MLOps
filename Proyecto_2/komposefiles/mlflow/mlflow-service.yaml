@@ -1,16 +1,13 @@
 apiVersion: v1
 kind: Service
 metadata:
-  annotations:
-    kompose.cmd: C:\Users\sebas\AppData\Local\Microsoft\WinGet\Packages\Kubernetes.kompose_Microsoft.Winget.Source_8wekyb3d8bbwe\kompose.exe convert -f compose/mlflow.yml -f compose/minio.yml -o komposefiles/mlflow/
-    kompose.version: 1.38.0 (a8f5d1cbd)
-  labels:
-    io.kompose.service: mlflow
   name: mlflow
+  labels:
+    app: mlflow
 spec:
   ports:
     - name: "5000"
       port: 5000
       targetPort: 5000
   selector:
-    io.kompose.service: mlflow
+    app: mlflow

@@ -1,0 +1,13 @@
+services:
+  streamlit:
+    build:
+      context: ../streamlit
+      dockerfile: Dockerfile
+    container_name: Streamlit
+    ports:
+      - "8501:8501"
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped

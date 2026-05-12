@@ -20,46 +20,23 @@ def create_tables():
     """Crea las tablas necesarias en la base de datos si no existen."""
 
     from utils.db_connection import connect_to_db, close_db_connection
-    from utils.db_schema import create_table_raw
+    from utils.db_schema import (
+        create_table_raw,
+        create_split_table,
+        create_inference_logs_table,
+    )
 
     connection = None
 
     try:
         connection = connect_to_db()
-        cursor = connection.cursor()
-
-        cursor.execute(
-            """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-                AND table_type = 'BASE TABLE'
-            """
-        )
-
-        tables = cursor.fetchall()
+        create_table_raw(connection, "diabetic_data_raw")
+        create_split_table(connection, "diabetic_data_split")
+        create_inference_logs_table(connection, "inference_logs")
 
     finally:
         if connection is not None:
             close_db_connection(connection)
-
-    if not tables:
-        print("Base de datos limpia: no hay tablas")
-
-        connection = None
-
-        try:
-            connection = connect_to_db()
-            print("Creando tabla diabetic_data_raw...")
-            create_table_raw(connection, "diabetic_data_raw")
-
-        finally:
-            if connection is not None:
-                close_db_connection(connection)
-
-    else:
-        print(f"Tablas existentes: {[table[0] for table in tables]}")
-        print("No se crearán tablas nuevas para evitar conflictos")
 
 
 def validate_source_file():
