@@ -1,0 +1,34 @@
+Proyecto_2/Airflow/dags/utils/ingestion.py
+  s_8e223fe5fbfbd2::t_19f6ff19127252 13-14,17,34,38-40,43,49-54,66-69
+Proyecto_2/Airflow/dags/utils/preprocess.py
+  s_8e223fe5fbfbd2::t_3af89141316ae8 21-63
+  s_8e223fe5fbfbd2::t_dd490298b4321f 214,216,220-221,225
+  s_8e223fe5fbfbd2::t_88a8baf5d850ba 302-306,312-313
+  s_8e223fe5fbfbd2::t_f09d0b8559e6c5 343-344,352
+  s_8e223fe5fbfbd2::t_7b0831722e6970 255,257,262
+Proyecto_2/Airflow/dags/utils/db_schema.py
+  s_8e223fe5fbfbd2::t_aff85dac1101ff 151
+Proyecto_2/Airflow/dags/data_dag.py
+  s_8e223fe5fbfbd2::t_c4273be88c4e20 124,138-139,148-166
+  s_8e223fe5fbfbd2::t_1301e83e8d683e 325-329
+  s_8e223fe5fbfbd2::t_029b1b51182ede 350
+Proyecto_2/Airflow/dags/utils/training.py
+  s_8e223fe5fbfbd2::t_ef1bdf030f8e93 245,249-261,294-295
+  s_8e223fe5fbfbd2::t_5ad8af4760fd6c 140,142,147-148,152-153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.6",
+  "base_commit_sha": "60b024dbb8c96d2567af371d8d256959051d5368",
+  "prompts": {},
+  "sessions": {
+    "s_8e223fe5fbfbd2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2d64d70e-d5fb-4791-98d9-a1c1b3b2f357",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "tanhernandez <tannia.hernandez@mercadolibre.com.co>"
+    }
+  }
+}
