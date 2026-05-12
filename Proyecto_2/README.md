@@ -203,25 +203,8 @@ El despliegue completo corre sobre un cluster local de Kubernetes (Docker Deskto
 ### Prerequisitos
 
 - Docker Desktop con Kubernetes habilitado (**Settings → Kubernetes → Enable Kubernetes**)
-- Cuenta en DockerHub con las imagenes publicadas
 
-### 1. Publicar imagenes en DockerHub
-
-Todas las imagenes personalizadas deben estar disponibles en un registro publico. Construir y publicar con:
-
-```bash
-make build-push DOCKER_USER=tu_usuario
-```
-
-### 2. Actualizar referencias de imagenes
-
-Actualiza los manifiestos y el values de Airflow con tu usuario de DockerHub:
-
-```bash
-make set-user DOCKER_USER=tu_usuario
-```
-
-### 3. Desplegar todo
+### 1. Desplegar todo
 
 ```bash
 make deploy
@@ -236,7 +219,7 @@ Este comando ejecuta en orden:
 - Despliega Prometheus y Grafana
 - Instala Airflow via Helm
 
-### 4. Acceder a los servicios
+### 2. Acceder a los servicios
 
 ```bash
 make forward
@@ -252,11 +235,19 @@ make forward
 | Prometheus | http://localhost:9090 | — |
 | Grafana | http://localhost:3000 | admin / admin |
 
-### 5. Eliminar el despliegue
+### 3. Eliminar el despliegue
 
 ```bash
 make delete
 ```
+
+> **Solo si se modifican las imagenes del proyecto** (API, MLflow, Streamlit, Locust o Airflow): reconstruir, publicar en DockerHub y actualizar las referencias antes de desplegar.
+>
+> ```bash
+> make build-push DOCKER_USER=tu_usuario
+> make set-user   DOCKER_USER=tu_usuario
+> make deploy
+> ```
 
 ---
 
@@ -441,7 +432,17 @@ Interfaz grafica para interactuar con la API sin necesidad de usar curl o Postma
 - Probabilidades por clase y tiempo de respuesta
 - Manejo de errores (modelo no listo, timeout, validacion)
 
-<!-- IMAGEN: interfaz de Streamlit con prediccion -->
+**Formulario listo para predecir**
+
+El sidebar confirma el modelo activo (`diabetic-readmission-model` v7, alias `production`) junto con la fecha de carga. El formulario muestra los 47 campos organizados en secciones colapsables: datos demograficos, admision, laboratorio/diagnosticos, medicamentos y otros. El boton "Cargar ejemplo" rellena todos los campos con un registro real del dataset para facilitar la demostracion.
+
+![Streamlit formulario](images_docs/Streamlit_vacio.png)
+
+**Resultado de la prediccion**
+
+Tras presionar "Predecir", el resultado aparece debajo del formulario con un bloque coloreado segun la clase: rojo para `<30` (readmision en menos de 30 dias), naranja para `>30` y verde para `NO`. En este ejemplo el modelo predice **readmision en menos de 30 dias** con un 39.7 % de probabilidad, seguido de `>30` (34.2 %) y `NO` (26.0 %). Las barras de progreso y el grafico de barras permiten comparar las probabilidades de un vistazo. La seccion de informacion de la inferencia muestra el modelo, version, alias y el tiempo de respuesta de la API (195.2 ms en este caso).
+
+![Streamlit prediccion](images_docs/Streamlit_con%20data.png)
 
 ---
 

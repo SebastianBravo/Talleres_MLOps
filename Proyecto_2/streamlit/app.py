@@ -94,14 +94,14 @@ def get_model_info():
 
 st.set_page_config(
     page_title="Diabetes Readmission",
-    page_icon="hospital",
+    page_icon="🏥",
     layout="wide",
 )
 
 init_session_state()
 
 st.title("Prediccion de Readmision Hospitalaria")
-st.caption("Dataset: Diabetes 130-US Hospitals (1999-2008)")
+st.caption("Dataset: Diabetes 130-US Hospitals (1999-2008) — RandomForestClassifier via MLflow")
 
 # --- Sidebar: info del modelo ---
 with st.sidebar:
@@ -278,23 +278,52 @@ if st.button("Predecir", type="primary", use_container_width=True):
             result = resp.json()
             prediction = result.get("prediction", "-")
 
-            # Mostrar prediccion con color según resultado
+            st.divider()
+
+            # Resultado prominente
             if prediction == "<30":
-                st.error(f"Resultado: Readmision en menos de 30 dias ({prediction})")
+                color, label = "#c0392b", "Readmision en menos de 30 dias"
             elif prediction == ">30":
-                st.warning(f"Resultado: Readmision en mas de 30 dias ({prediction})")
+                color, label = "#e67e22", "Readmision en mas de 30 dias"
             else:
-                st.success(f"Resultado: Sin readmision ({prediction})")
+                color, label = "#27ae60", "Sin readmision prevista"
+
+            st.markdown(
+                f"""
+                <div style="background-color:{color}22; border-left: 6px solid {color};
+                            padding: 1.2rem 1.5rem; border-radius: 6px; margin-bottom: 1rem;">
+                    <span style="font-size: 0.85rem; color:{color}; font-weight:600;
+                                 text-transform: uppercase; letter-spacing: 0.05em;">Prediccion</span>
+                    <div style="font-size: 2rem; font-weight: 700; color:{color};
+                                margin-top: 0.2rem;">{label}</div>
+                    <div style="font-size: 1.1rem; color:{color}; opacity:0.8;">Clase: {prediction}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
             # Probabilidades
             probabilities = result.get("probabilities")
             if probabilities:
                 st.subheader("Probabilidades por clase")
-                prob_cols = st.columns(len(probabilities))
-                for col, (cls, prob) in zip(prob_cols, probabilities.items()):
-                    col.metric(label=cls, value=f"{prob:.1%}")
+
+                col_metrics, col_chart = st.columns([1, 2])
+
+                with col_metrics:
+                    for cls, prob in probabilities.items():
+                        st.metric(label=cls, value=f"{prob:.1%}")
+                        st.progress(prob)
+
+                with col_chart:
+                    import pandas as pd
+                    chart_data = pd.DataFrame(
+                        {"Probabilidad": list(probabilities.values())},
+                        index=list(probabilities.keys()),
+                    )
+                    st.bar_chart(chart_data, height=220)
 
             # Informacion del modelo y respuesta
+            st.divider()
             st.subheader("Informacion de la inferencia")
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Modelo", result.get("model_name", "-"))
