@@ -124,15 +124,21 @@ forward:
 	kubectl port-forward svc/locust            8089:8089 -n $(NAMESPACE) &
 	kubectl port-forward svc/prometheus        9090:9090 -n $(NAMESPACE) &
 	kubectl port-forward svc/grafana           3000:3000 -n $(NAMESPACE) &
+	kubectl port-forward svc/postgres-dataset  5432:5432 -n $(NAMESPACE) &
+	kubectl port-forward svc/mlflow-db         5433:5432 -n $(NAMESPACE) &
+	kubectl port-forward svc/minio             9001:9001 -n $(NAMESPACE) &
 	@echo ""
 	@echo "Servicios disponibles:"
-	@echo "  Airflow    → http://localhost:8080  (airflow / airflow)"
-	@echo "  MLflow     → http://localhost:5000"
-	@echo "  API        → http://localhost:8000/docs"
-	@echo "  Streamlit  → http://localhost:8501"
-	@echo "  Locust     → http://localhost:8089"
-	@echo "  Prometheus → http://localhost:9090"
-	@echo "  Grafana    → http://localhost:3000  (admin / admin)"
+	@echo "  Airflow          → http://localhost:8080  (airflow / airflow)"
+	@echo "  MLflow           → http://localhost:5000"
+	@echo "  API              → http://localhost:8000/docs"
+	@echo "  Streamlit        → http://localhost:8501"
+	@echo "  Locust           → http://localhost:8089"
+	@echo "  Prometheus       → http://localhost:9090"
+	@echo "  Grafana          → http://localhost:3000  (admin / admin)"
+	@echo "  DB dataset       → localhost:5432  (airflow / airflow  →  diabetic_data)"
+	@echo "  DB MLflow        → localhost:5433  (mlflow / mlflow    →  mlflow)"
+	@echo "  MinIO UI         → http://localhost:9001  (minioadmin / minioadmin)"
 
 stop-forward:
 	pkill -f "kubectl port-forward" || true
