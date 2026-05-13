@@ -546,6 +546,40 @@ Almacena los datos tal como llegan del CSV, sin transformaciones destructivas.
 | `row_hash` | Hash MD5 de la fila para detectar duplicados |
 | *(columnas del dataset)* | Los 50 campos originales del dataset |
 
+### Tabla `diabetic_data_cleaned`
+
+Datos preprocesados listos para entrenamiento e inferencia. Las columnas de features son dinamicas segun el pipeline.
+
+| Campo | Descripcion |
+|---|---|
+| `id` | Identificador interno |
+| *(features numericas)* | Columnas DOUBLE PRECISION generadas por el preprocesamiento |
+| `dataset` | Etiqueta de split (`train` o `test`) |
+| `readmitted` | Target final (clase) |
+
+### Tabla `diabetic_data_split`
+
+Registra la asignacion determinista train/test por registro para mantener consistencia entre ejecuciones.
+
+| Campo | Descripcion |
+|---|---|
+| `source_record_id` | Hash del registro original (PK) |
+| `dataset` | Split asignado (`train` o `test`) |
+| `assigned_at` | Timestamp de asignacion |
+
+### Tabla `diabetic_data_processed_batches`
+
+Auditoria de batches procesados y version del preprocesador aplicado.
+
+| Campo | Descripcion |
+|---|---|
+| `batch_id` | Identificador del lote |
+| `processed_at` | Timestamp de procesamiento |
+| `preprocessor_version` | Version del preprocesador en MinIO |
+| `rows_total` | Registros procesados |
+| `rows_train` | Registros enviados a train |
+| `rows_test` | Registros enviados a test |
+
 ### Tabla `inference_logs`
 
 Registra cada prediccion realizada por la API.
