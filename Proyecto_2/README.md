@@ -52,7 +52,7 @@ El sistema esta dividido en dos fases:
 
 **Fase de inferencia** — La API de FastAPI carga el modelo productivo desde MLflow dinamicamente. Cada prediccion queda registrada en la base de datos. Streamlit permite interactuar con la API desde una interfaz grafica. Prometheus recolecta metricas de la API y Grafana las visualiza en tiempo real.
 
-<!-- IMAGEN: diagrama de arquitectura -->
+![Arquitectura](images_docs/arquitectura.png)
 
 ---
 
