@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-dataset
+  labels:
+    app: postgres-dataset
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-dataset
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: postgres-dataset
+    spec:
+      containers:
+        - name: postgres-dataset
+          image: postgres:13
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - configMapRef:
+                name: postgres-dataset-config
+            - secretRef:
+                name: postgres-dataset-secret
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - airflow
+                - -d
+                - diabetic_data
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 5
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - airflow
+                - -d
+                - diabetic_data
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 5
+          volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: postgres-dataset-db-volume
+      restartPolicy: Always
+      volumes:
+        - name: postgres-dataset-db-volume
+          persistentVolumeClaim:
+            claimName: postgres-dataset-db-volume

@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+data:
+  MLFLOW_TRACKING_URI: "http://mlflow:5000"
+  MLFLOW_S3_ENDPOINT_URL: "http://minio:9000"
+  REGISTERED_MODEL_NAME: "diabetic-readmission-model"
+  MODEL_ALIAS: "production"
+  POSTGRES_DATASET_HOST: "postgres-dataset"
+  POSTGRES_DATASET_PORT: "5432"
+  POSTGRES_DATASET_DATABASE: "diabetic_data"

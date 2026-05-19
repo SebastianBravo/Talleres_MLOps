@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-db
+  labels:
+    app: mlflow-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow-db
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: mlflow-db
+    spec:
+      containers:
+        - name: mlflow-db
+          image: postgres:13
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - configMapRef:
+                name: mlflow-db-config
+            - secretRef:
+                name: mlflow-db-secret
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - mlflow
+                - -d
+                - mlflow
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 5
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - mlflow
+                - -d
+                - mlflow
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 5
+          volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: mlflow-db-volume
+      restartPolicy: Always
+      volumes:
+        - name: mlflow-db-volume
+          persistentVolumeClaim:
+            claimName: mlflow-db-volume

@@ -1,0 +1,15 @@
+services:
+  inference_api:
+    build: ../inference_api
+    ports:
+      - "8001:8001"
+    volumes:
+      - ../inference_api:/app
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
+      MINIO_BUCKET: covertype-project
+    command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+    restart: unless-stopped
