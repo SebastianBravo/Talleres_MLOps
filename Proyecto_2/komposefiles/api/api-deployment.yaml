@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: oscarariasback/diabetes-api:latest
+          image: nginx
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
