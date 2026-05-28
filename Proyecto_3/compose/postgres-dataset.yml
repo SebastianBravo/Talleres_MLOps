@@ -4,13 +4,13 @@ services:
     environment:
       POSTGRES_USER: airflow
       POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: real_state_data
+      POSTGRES_DB: real_estate_data
     ports:
       - "5433:5432"
     volumes:
       - postgres-dataset-db-volume:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "airflow", "-d", "diabetic_data"]
+      test: ["CMD", "pg_isready", "-U", "airflow", "-d", "real_estate_data"]
       interval: 10s
       retries: 5
       start_period: 5s

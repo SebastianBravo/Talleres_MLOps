@@ -1,322 +1,701 @@
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.operators.empty import EmptyOperator
+from airflow.operators.python import BranchPythonOperator, PythonOperator
+from airflow.utils.trigger_rule import TriggerRule
+
+DAG_ID = "real_estate_mlops"
+RAW_TABLE = "property_raw"
+CLEAN_TABLE = "property_clean"
+AUDIT_TABLE = "batch_audit"
+REGISTERED_MODEL_NAME = "real-estate-price-model"
 
 
-DATA_BATCH_SIZE = 15000
-DAG_ID = "data_dag"
+# ---------------------------------------------------------------------------
+# Task callables
+# ---------------------------------------------------------------------------
 
 
-def get_total_rows(data_filepath):
-    """Cuenta filas del CSV excluyendo el encabezado."""
-    with open(data_filepath, "r", encoding="utf-8") as file_handle:
-        total_lines = sum(1 for _ in file_handle)
-
-    return max(total_lines - 1, 0)
-
-
-def create_tables():
-    """Crea las tablas necesarias en la base de datos si no existen."""
-
-    from utils.db_connection import connect_to_db, close_db_connection
+def _create_tables():
+    """Ensures all required DB tables exist before the pipeline runs."""
+    from utils.db_connection import close_db_connection, connect_to_db
     from utils.db_schema import (
-        create_table_raw,
-        create_split_table,
+        create_batch_audit_table,
         create_inference_logs_table,
+        create_table_raw,
     )
 
-    connection = None
+    conn = connect_to_db()
+    try:
+        create_table_raw(conn, RAW_TABLE)
+        create_batch_audit_table(conn, AUDIT_TABLE)
+        create_inference_logs_table(conn)
+    finally:
+        close_db_connection(conn)
+
+
+def _fetch_batch(**context):
+    """Reads the next batch from the external data API and caches it locally."""
+    from airflow.exceptions import AirflowSkipException
+
+    from utils.dataset_io import BatchExhaustedError, fetch_batch_from_api, save_batch_to_tmpfile
+
+    run_id = context["run_id"]
 
     try:
-        connection = connect_to_db()
-        create_table_raw(connection, "diabetic_data_raw")
-        create_split_table(connection, "diabetic_data_split")
-        create_inference_logs_table(connection, "inference_logs")
+        records, batch_number = fetch_batch_from_api()
+    except BatchExhaustedError as exc:
+        print(f"All batches collected: {exc}")
+        raise AirflowSkipException(str(exc))
 
-    finally:
-        if connection is not None:
-            close_db_connection(connection)
-
-
-def validate_source_file():
-    """Valida la existencia del archivo fuente y devuelve su ruta."""
-
-    import os
-    from utils.dataset_io import ensure_dataset_file
-
-    data_filepath = ensure_dataset_file()
-
-    if not data_filepath or not os.path.isfile(data_filepath):
-        raise FileNotFoundError("No se encontró el archivo fuente del dataset.")
-
-    return data_filepath
-
-
-def load_raw_batch(**context):
-    """Lee el siguiente batch del CSV y lo inserta en la tabla raw."""
-
-    from airflow.models import Variable
-    from utils.db_connection import connect_to_db, close_db_connection
-    from utils.dataset_io import read_diabetes_batch
-    from utils.ingestion import insert_raw_diabetic_data
+    batch_file = save_batch_to_tmpfile(records, run_id)
 
     ti = context["ti"]
+    ti.xcom_push(key="batch_id", value=batch_number)
+    ti.xcom_push(key="batch_file", value=batch_file)
+    ti.xcom_push(key="records_count", value=len(records))
 
-    data_filepath = ti.xcom_pull(task_ids="validate_source_file")
+    print(f"Fetched {len(records)} records for batch {batch_number}")
 
-    if not data_filepath:
-        print("No hay archivo fuente disponible. Se omite la carga.")
-        return
 
-    offset = int(Variable.get("diabetic_data_offset", default_var=0))
-    total_rows = int(Variable.get("diabetic_data_total_rows", default_var=0))
+def _store_raw_batch(**context):
+    """Inserts the cached batch into property_raw and creates the audit row."""
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.dataset_io import load_batch_from_tmpfile
+    from utils.ingestion import create_batch_audit_entry, store_raw_batch
 
-    if total_rows == 0:
-        total_rows = get_total_rows(data_filepath)
-        Variable.set("diabetic_data_total_rows", total_rows)
-        print(f"Total de filas detectadas en el CSV: {total_rows}")
+    ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+    batch_file = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_file")
+    records_count = ti.xcom_pull(task_ids="fetch_batch_from_api", key="records_count")
+    run_id = context["run_id"]
 
-    df, next_offset = read_diabetes_batch(
-        data_filepath,
-        DATA_BATCH_SIZE,
-        offset,
-    )
+    records = load_batch_from_tmpfile(batch_file)
 
-    if df.empty:
-        print("No hay nuevos registros por cargar.")
-        Variable.set("diabetic_data_complete", "True")
-        return
-
-    batch_number = int(Variable.get("diabetic_data_batch_number", default_var=0)) + 1
-
-    connection = None
-
-    try:
-        connection = connect_to_db()
-
-        insert_raw_diabetic_data(
-            connection,
-            "diabetic_data_raw",
-            df,
-            batch_id=batch_number,
-            data_source=data_filepath,
+    if not records:
+        raise ValueError(
+            f"Batch {batch_id} is empty — no data returned from API. "
+            "Check the API endpoint and group configuration."
         )
 
+    conn = connect_to_db()
+    try:
+        stored = store_raw_batch(conn, RAW_TABLE, records, batch_id)
+        create_batch_audit_entry(conn, AUDIT_TABLE, batch_id, run_id, records_count)
     finally:
-        if connection is not None:
-            close_db_connection(connection)
+        close_db_connection(conn)
 
-    Variable.set("diabetic_data_offset", next_offset)
-    Variable.set("diabetic_data_batch_number", batch_number)
+    print(f"Stored {stored} records for batch {batch_id}.")
 
-    ti.xcom_push(key="batch_number", value=batch_number)
 
-    if next_offset >= total_rows:
-        Variable.set("diabetic_data_complete", "True")
-        print("Todos los datos fueron ingestados.")
+def _validate_schema(**context):
+    """Validates column presence and schema structure of the new batch."""
+    from utils.dataset_io import load_batch_from_tmpfile
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.ingestion import update_batch_audit
+    from utils.validation import validate_schema
+
+    ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+    batch_file = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_file")
+    records = load_batch_from_tmpfile(batch_file)
+
+    result = validate_schema(records)
+
+    conn = connect_to_db()
+    try:
+        update_batch_audit(
+            conn, AUDIT_TABLE, batch_id,
+            schema_valid=result["valid"],
+            schema_issues="; ".join(result["issues"]) if result["issues"] else None,
+        )
+    finally:
+        close_db_connection(conn)
+
+    if not result["valid"]:
+        raise ValueError(
+            f"Schema validation failed for batch {batch_id}: {result['issues']}"
+        )
+
+    ti.xcom_push(key="schema_result", value=result)
+    print(f"Schema valid: {result['valid']}")
+
+
+def _validate_data_quality(**context):
+    """Evaluates null rates, duplicates and range violations."""
+    from utils.dataset_io import load_batch_from_tmpfile
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.ingestion import update_batch_audit
+    from utils.validation import validate_data_quality
+
+    ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+    batch_file = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_file")
+    records = load_batch_from_tmpfile(batch_file)
+
+    result = validate_data_quality(records)
+
+    conn = connect_to_db()
+    try:
+        update_batch_audit(
+            conn, AUDIT_TABLE, batch_id,
+            quality_score=result["quality_score"],
+            quality_issues=result["issues"],
+        )
+    finally:
+        close_db_connection(conn)
+
+    if not result["valid"]:
+        raise ValueError(
+            f"Data quality too poor for batch {batch_id} "
+            f"(score={result['quality_score']:.2f}): {result['issues']}"
+        )
+
+    ti.xcom_push(key="quality_result", value=result)
+    print(f"Quality score: {result['quality_score']:.2f}, valid: {result['valid']}")
+
+
+def _detect_new_categories(**context):
+    """Identifies categories in the new batch absent from historical data."""
+    from utils.dataset_io import load_batch_from_tmpfile
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.ingestion import update_batch_audit
+    from utils.validation import detect_new_categories
+
+    ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+    batch_file = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_file")
+    records = load_batch_from_tmpfile(batch_file)
+
+    conn = connect_to_db()
+    try:
+        result = detect_new_categories(records, conn, RAW_TABLE)
+        update_batch_audit(
+            conn, AUDIT_TABLE, batch_id,
+            new_categories_detected=result["new_categories"],
+        )
+    finally:
+        close_db_connection(conn)
+
+    ti.xcom_push(key="new_categories_result", value=result)
+
+    if result["significant_new"]:
+        print(f"New significant categories detected: {list(result['new_categories'].keys())}")
     else:
-        Variable.set("diabetic_data_complete", "False")
-        print(f"Progreso de ingesta: {next_offset}/{total_rows}")
+        print("No significant new categories detected")
 
 
-def assign_dataset(**context):
-    """Asigna deterministamente train/test para filas nuevas."""
-
-    from utils.db_connection import connect_to_db, close_db_connection
-    from utils.ingestion import assign_dataset_split
-
-    connection = None
-
-    try:
-        connection = connect_to_db()
-
-        assign_dataset_split(
-            connection,
-            raw_table="diabetic_data_raw",
-            split_table="diabetic_data_split",
-            test_size=0.2,
-            random_state=42,
-        )
-
-    finally:
-        if connection is not None:
-            close_db_connection(connection)
-
-
-def preprocess_batch(**context):
-    """Preprocesa el batch actual y versiona el preprocesador."""
-
-    from utils.db_connection import connect_to_db, close_db_connection
-    from utils.preprocess import preprocess_and_insert
+def _detect_data_drift(**context):
+    """Runs KS test on numeric columns vs. historical distribution."""
+    from utils.dataset_io import load_batch_from_tmpfile
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.drift_detection import detect_drift
+    from utils.ingestion import update_batch_audit
 
     ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+    batch_file = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_file")
+    records = load_batch_from_tmpfile(batch_file)
 
-    batch_number = ti.xcom_pull(
-        task_ids="load_raw_batch",
-        key="batch_number",
-    )
-
-    if not batch_number:
-        print("No hay batch nuevo para preprocesar.")
-        return
-
-    connection = None
-
+    conn = connect_to_db()
     try:
-        connection = connect_to_db()
-
-        preprocess_and_insert(
-            connection,
-            raw_table="diabetic_data_raw",
-            cleaned_table="diabetic_data_cleaned",
-            split_table="diabetic_data_split",
-            batch_id=batch_number,
-            bucket="diabetic-project",
-            preprocessor_path="preprocessor",
+        result = detect_drift(records, conn, RAW_TABLE)
+        update_batch_audit(
+            conn, AUDIT_TABLE, batch_id,
+            drift_detected=result["drift_detected"],
+            drift_details=result["details"],
         )
-
     finally:
-        if connection is not None:
-            close_db_connection(connection)
+        close_db_connection(conn)
+
+    ti.xcom_push(key="drift_result", value=result)
+    print(f"Drift detected: {result['drift_detected']} — {result.get('reason', '')}")
 
 
-def train_models(**context):
-    """Entrena modelos con datos procesados y registra en MLflow."""
-
-    from airflow.models import Variable
-    from utils.db_connection import connect_to_db, close_db_connection
-    from utils.training import train_and_register_models
+def _preprocess_data(**context):
+    """Fits the preprocessing pipeline, transforms data and stores clean table."""
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.ingestion import update_batch_audit
+    from utils.preprocess import preprocess_and_store
 
     ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
 
-    batch_number = ti.xcom_pull(
-        task_ids="load_raw_batch",
-        key="batch_number",
+    conn = connect_to_db()
+    try:
+        result = preprocess_and_store(conn, RAW_TABLE, CLEAN_TABLE, batch_id)
+        update_batch_audit(
+            conn, AUDIT_TABLE, batch_id,
+            preprocessor_version=result["preprocessor_version"],
+            records_stored=result["records_processed"],
+        )
+    finally:
+        close_db_connection(conn)
+
+    ti.xcom_push(key="preprocess_result", value=result)
+    print(
+        f"Preprocessed {result['records_processed']} rows "
+        f"({result['train_count']} train / {result['test_count']} test), "
+        f"version={result['preprocessor_version']}"
     )
 
-    if not batch_number:
-        print("No hay batch nuevo para entrenar.")
-        return
 
-    last_trained = int(Variable.get("diabetic_last_trained_batch", default_var=0))
+def _decide_training(**context):
+    """
+    BranchPythonOperator callable.
 
-    if int(batch_number) <= last_trained:
-        print("El batch ya fue entrenado previamente. Se omite reentrenamiento.")
-        return
-
-    connection = None
-
-    try:
-        connection = connect_to_db()
-
-        train_and_register_models(
-            connection,
-            cleaned_table="diabetic_data_cleaned",
-            batch_id=batch_number,
-            preprocessor_bucket="diabetic-project",
-            experiment_name="diabetic-readmission",
-            registered_model_name="diabetic-readmission-model",
-            primary_metric_name="recall_lt30",
-        )
-
-    finally:
-        if connection is not None:
-            close_db_connection(connection)
-
-    Variable.set("diabetic_last_trained_batch", batch_number)
-
-
-def reload_api_model(**context):
-    """Recarga el modelo productivo en la API de inferencia."""
-
-    from airflow.models import Variable
-    from utils.inference_api import reload_inference_api
+    Evaluates technical criteria and returns the task_id for the next branch.
+    """
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.ingestion import update_batch_audit
+    from utils.training_decision import should_train
 
     ti = context["ti"]
-
-    batch_number = ti.xcom_pull(
-        task_ids="load_raw_batch",
-        key="batch_number",
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+    drift_result = ti.xcom_pull(task_ids="detect_data_drift", key="drift_result") or {}
+    new_cat_result = (
+        ti.xcom_pull(task_ids="detect_new_categories", key="new_categories_result") or {}
     )
 
-    if not batch_number:
-        print("No hay batch nuevo. Se omite recarga de la API.")
-        return
-
-    last_trained = int(Variable.get("diabetic_last_trained_batch", default_var=0))
-
-    if int(batch_number) != last_trained:
-        print(
-            "El batch actual no coincide con el último batch entrenado. "
-            "Se omite recarga de la API."
+    conn = connect_to_db()
+    try:
+        trigger, reasons = should_train(
+            batch_id=batch_id,
+            connection=conn,
+            drift_result=drift_result,
+            new_categories_result=new_cat_result,
+            registered_model_name=REGISTERED_MODEL_NAME,
+            raw_table=RAW_TABLE,
         )
-        return
+        update_batch_audit(
+            conn, AUDIT_TABLE, batch_id,
+            should_train=trigger,
+            training_reasons=reasons,
+        )
+    finally:
+        close_db_connection(conn)
 
-    reload_inference_api()
+    decision = "train_candidate_model" if trigger else "skip_training"
+    print(f"Training decision: {decision} — {reasons}")
+    return decision
 
+
+def _skip_training(**context):
+    """Records the skip decision in the audit table."""
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.ingestion import update_batch_audit
+
+    ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+
+    conn = connect_to_db()
+    try:
+        update_batch_audit(
+            conn, AUDIT_TABLE, batch_id,
+            execution_status="skipped_training",
+        )
+    finally:
+        close_db_connection(conn)
+
+    print(f"Batch {batch_id}: training skipped — criteria not met")
+
+
+def _train_candidate_model(**context):
+    """Trains RandomForest configs and logs each run to MLflow."""
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.training import train_candidate
+
+    ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+    preprocess_result = (
+        ti.xcom_pull(task_ids="preprocess_data", key="preprocess_result") or {}
+    )
+    drift_result = ti.xcom_pull(task_ids="detect_data_drift", key="drift_result") or {}
+    new_cat_result = (
+        ti.xcom_pull(task_ids="detect_new_categories", key="new_categories_result") or {}
+    )
+
+    # Collect training reasons for MLflow tags
+    reasons = []
+    if drift_result.get("drift_detected"):
+        reasons.append(f"Drift in {drift_result.get('drifted_columns')}")
+    if new_cat_result.get("significant_new"):
+        reasons.append("New categories detected")
+
+    conn = connect_to_db()
+    try:
+        result = train_candidate(
+            connection=conn,
+            clean_table=CLEAN_TABLE,
+            batch_id=batch_id,
+            preprocessor_version=preprocess_result.get("preprocessor_version"),
+            training_reasons=reasons,
+            registered_model_name=REGISTERED_MODEL_NAME,
+        )
+    finally:
+        close_db_connection(conn)
+
+    ti.xcom_push(key="train_result", value=result)
+    print(
+        f"Training complete — best_run_id={result['best_run_id']}, "
+        f"test_mae={result['best_mae']:.4f}"
+    )
+
+
+def _evaluate_candidate_model(**context):
+    """
+    Loads the candidate run from MLflow and logs additional evaluation artifacts.
+    Currently validates that the run exists and metrics were recorded correctly.
+    """
+    import mlflow
+    import os
+
+    ti = context["ti"]
+    train_result = ti.xcom_pull(task_ids="train_candidate_model", key="train_result") or {}
+    run_id = train_result.get("best_run_id")
+
+    if not run_id:
+        raise ValueError("No candidate run_id found — training may have failed")
+
+    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
+    client = mlflow.MlflowClient()
+    run = client.get_run(run_id)
+    metrics = run.data.metrics
+
+    required = {"test_mae", "test_rmse", "test_r2"}
+    missing = required - set(metrics.keys())
+    if missing:
+        raise ValueError(
+            f"Candidate run {run_id} is missing required metrics: {missing}"
+        )
+
+    print(
+        f"Candidate evaluation — "
+        f"MAE={metrics['test_mae']:.4f}, "
+        f"RMSE={metrics['test_rmse']:.4f}, "
+        f"R²={metrics['test_r2']:.4f}"
+    )
+    ti.xcom_push(key="candidate_metrics", value={k: v for k, v in metrics.items() if "test_" in k})
+
+
+def _register_candidate_in_mlflow(**context):
+    """Creates a model version in the MLflow registry (no alias yet)."""
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.ingestion import update_batch_audit
+    from utils.training import register_candidate
+
+    ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+    train_result = ti.xcom_pull(task_ids="train_candidate_model", key="train_result") or {}
+    run_id = train_result.get("best_run_id")
+
+    model_version = register_candidate(run_id, REGISTERED_MODEL_NAME)
+
+    conn = connect_to_db()
+    try:
+        update_batch_audit(
+            conn, AUDIT_TABLE, batch_id,
+            model_run_id=run_id,
+            model_version=str(model_version),
+        )
+    finally:
+        close_db_connection(conn)
+
+    ti.xcom_push(key="model_version", value=model_version)
+    print(f"Registered model version: {model_version}")
+
+
+def _compare_with_production(**context):
+    """Compares candidate vs. production using stored MLflow test metrics."""
+    from utils.model_comparison import compare_with_production
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.ingestion import update_batch_audit
+
+    ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+    train_result = ti.xcom_pull(task_ids="train_candidate_model", key="train_result") or {}
+    run_id = train_result.get("best_run_id")
+
+    result = compare_with_production(run_id, REGISTERED_MODEL_NAME)
+
+    conn = connect_to_db()
+    try:
+        update_batch_audit(
+            conn, AUDIT_TABLE, batch_id,
+            candidate_mae=result["candidate_metrics"].get("test_mae"),
+            candidate_rmse=result["candidate_metrics"].get("test_rmse"),
+            production_mae=(
+                result["production_metrics"].get("test_mae")
+                if result["production_metrics"]
+                else None
+            ),
+            production_rmse=(
+                result["production_metrics"].get("test_rmse")
+                if result["production_metrics"]
+                else None
+            ),
+        )
+    finally:
+        close_db_connection(conn)
+
+    ti.xcom_push(key="comparison_result", value=result)
+    print(
+        f"Comparison — should_promote={result['should_promote']}: {result['reason']}"
+    )
+
+
+def _decide_promotion(**context):
+    """
+    BranchPythonOperator callable.
+
+    Returns 'promote_model' or 'reject_model' based on the comparison result.
+    """
+    ti = context["ti"]
+    comparison = (
+        ti.xcom_pull(task_ids="compare_with_production", key="comparison_result") or {}
+    )
+    if comparison.get("should_promote", False):
+        return "promote_model"
+    return "reject_model"
+
+
+def _promote_model(**context):
+    """Sets the production alias on the candidate version in MLflow."""
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.ingestion import update_batch_audit
+    from utils.model_comparison import promote_to_production
+
+    ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+    train_result = ti.xcom_pull(task_ids="train_candidate_model", key="train_result") or {}
+    run_id = train_result.get("best_run_id")
+    comparison = (
+        ti.xcom_pull(task_ids="compare_with_production", key="comparison_result") or {}
+    )
+
+    promoted_version = promote_to_production(run_id, REGISTERED_MODEL_NAME)
+
+    conn = connect_to_db()
+    try:
+        update_batch_audit(
+            conn, AUDIT_TABLE, batch_id,
+            model_promoted=True,
+            promotion_reason=comparison.get("reason", "Promoted to production"),
+        )
+    finally:
+        close_db_connection(conn)
+
+    print(f"Model v{promoted_version} promoted to production")
+
+
+def _reject_model(**context):
+    """Logs the rejection reason without touching the production alias."""
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.ingestion import update_batch_audit
+
+    ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+    comparison = (
+        ti.xcom_pull(task_ids="compare_with_production", key="comparison_result") or {}
+    )
+
+    conn = connect_to_db()
+    try:
+        update_batch_audit(
+            conn, AUDIT_TABLE, batch_id,
+            model_promoted=False,
+            promotion_reason=comparison.get("reason", "Did not meet promotion criteria"),
+        )
+    finally:
+        close_db_connection(conn)
+
+    print(f"Model rejected — {comparison.get('reason', 'no reason recorded')}")
+
+
+def _notify_or_log_result(**context):
+    """
+    Final step: marks the batch as completed in the audit table regardless
+    of which branch was taken (train/skip, promote/reject).
+    """
+    from datetime import datetime
+
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.ingestion import update_batch_audit
+
+    ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+
+    conn = connect_to_db()
+    try:
+        update_batch_audit(
+            conn, AUDIT_TABLE, batch_id,
+            execution_status="success",
+            completed_at=datetime.utcnow(),
+        )
+    finally:
+        close_db_connection(conn)
+
+    print(f"Batch {batch_id} processing complete")
+
+
+# ---------------------------------------------------------------------------
+# DAG definition
+# ---------------------------------------------------------------------------
 
 default_args = {
     "owner": "airflow",
-    "retries": 1,
-    "retry_delay": timedelta(minutes=1),
+    "retries": 2,
+    "retry_delay": timedelta(minutes=2),
+    "retry_exponential_backoff": False,
 }
-
 
 with DAG(
     dag_id=DAG_ID,
     description=(
-        "DAG para recolectar datos, cargarlos por lotes, "
-        "preprocesarlos, entrenar modelos y recargar la API de inferencia."
+        "Incremental real estate MLOps pipeline: "
+        "ingest → validate → drift → preprocess → decide → train → compare → promote"
     ),
     default_args=default_args,
-    schedule=timedelta(minutes=2),  # Solo para pruebas
-    start_date=datetime(2026, 2, 24),
+    schedule=timedelta(minutes=5),
+    start_date=datetime(2026, 5, 27),
     max_active_runs=1,
     catchup=False,
-    tags=["diabetes", "ml", "training", "inference"],
+    tags=["real-estate", "mlops", "regression", "incremental"],
 ) as dag:
-    create_tables_task = PythonOperator(
+
+    start = EmptyOperator(task_id="start")
+
+    fetch_batch_from_api = PythonOperator(
+        task_id="fetch_batch_from_api",
+        python_callable=_fetch_batch,
+        retries=3,
+    )
+
+    store_raw_batch = PythonOperator(
+        task_id="store_raw_batch",
+        python_callable=_store_raw_batch,
+    )
+
+    validate_schema = PythonOperator(
+        task_id="validate_schema",
+        python_callable=_validate_schema,
+    )
+
+    validate_data_quality = PythonOperator(
+        task_id="validate_data_quality",
+        python_callable=_validate_data_quality,
+    )
+
+    detect_new_categories = PythonOperator(
+        task_id="detect_new_categories",
+        python_callable=_detect_new_categories,
+    )
+
+    detect_data_drift = PythonOperator(
+        task_id="detect_data_drift",
+        python_callable=_detect_data_drift,
+    )
+
+    preprocess_data = PythonOperator(
+        task_id="preprocess_data",
+        python_callable=_preprocess_data,
+    )
+
+    decide_training = BranchPythonOperator(
+        task_id="decide_training",
+        python_callable=_decide_training,
+    )
+
+    skip_training = PythonOperator(
+        task_id="skip_training",
+        python_callable=_skip_training,
+    )
+
+    train_candidate_model = PythonOperator(
+        task_id="train_candidate_model",
+        python_callable=_train_candidate_model,
+        execution_timeout=timedelta(hours=2),
+    )
+
+    evaluate_candidate_model = PythonOperator(
+        task_id="evaluate_candidate_model",
+        python_callable=_evaluate_candidate_model,
+    )
+
+    register_candidate_in_mlflow = PythonOperator(
+        task_id="register_candidate_in_mlflow",
+        python_callable=_register_candidate_in_mlflow,
+    )
+
+    compare_with_production = PythonOperator(
+        task_id="compare_with_production",
+        python_callable=_compare_with_production,
+    )
+
+    decide_promotion = BranchPythonOperator(
+        task_id="decide_promotion",
+        python_callable=_decide_promotion,
+    )
+
+    promote_model = PythonOperator(
+        task_id="promote_model",
+        python_callable=_promote_model,
+    )
+
+    reject_model = PythonOperator(
+        task_id="reject_model",
+        python_callable=_reject_model,
+    )
+
+    # Runs regardless of which branch was taken (skip/promote/reject)
+    notify_or_log_result = PythonOperator(
+        task_id="notify_or_log_result",
+        python_callable=_notify_or_log_result,
+        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
+    )
+
+    end = EmptyOperator(
+        task_id="end",
+        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
+    )
+
+    # DAG init step (create tables before anything runs)
+    create_tables = PythonOperator(
         task_id="create_tables",
-        python_callable=create_tables,
+        python_callable=_create_tables,
     )
 
-    validate_source_file_task = PythonOperator(
-        task_id="validate_source_file",
-        python_callable=validate_source_file,
-    )
-
-    load_raw_batch_task = PythonOperator(
-        task_id="load_raw_batch",
-        python_callable=load_raw_batch,
-    )
-
-    assign_dataset_task = PythonOperator(
-        task_id="assign_dataset",
-        python_callable=assign_dataset,
-    )
-
-    preprocess_batch_task = PythonOperator(
-        task_id="preprocess_batch",
-        python_callable=preprocess_batch,
-    )
-
-    train_models_task = PythonOperator(
-        task_id="train_models",
-        python_callable=train_models,
-    )
-
-    reload_api_model_task = PythonOperator(
-        task_id="reload_api_model",
-        python_callable=reload_api_model,
-    )
+    # ---------------------------------------------------------------------------
+    # Dependencies
+    # ---------------------------------------------------------------------------
 
     (
-        create_tables_task
-        >> validate_source_file_task
-        >> load_raw_batch_task
-        >> assign_dataset_task
-        >> preprocess_batch_task
-        >> train_models_task
-        >> reload_api_model_task
+        start
+        >> create_tables
+        >> fetch_batch_from_api
+        >> store_raw_batch
+        >> validate_schema
+        >> validate_data_quality
+        >> detect_new_categories
+        >> detect_data_drift
+        >> preprocess_data
+        >> decide_training
     )
+
+    # Training branch
+    decide_training >> train_candidate_model
+    (
+        train_candidate_model
+        >> evaluate_candidate_model
+        >> register_candidate_in_mlflow
+        >> compare_with_production
+        >> decide_promotion
+    )
+    decide_promotion >> promote_model >> notify_or_log_result
+    decide_promotion >> reject_model >> notify_or_log_result
+
+    # Skip branch
+    decide_training >> skip_training >> notify_or_log_result
+
+    notify_or_log_result >> end

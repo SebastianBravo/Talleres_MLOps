@@ -24,6 +24,7 @@ include:
   - compose/airflow-slim.yml
   - compose/adminer.yml
   - compose/mlflow.yml
+  - compose/api_source.yml
   # - compose/api.yml
   # - compose/prometheus.yml
   # - compose/grafana.yml

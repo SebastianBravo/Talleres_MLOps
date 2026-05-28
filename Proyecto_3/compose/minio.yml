@@ -32,7 +32,7 @@ services:
       mc alias set local http://minio:9000 minioadmin minioadmin;
       mc mb -p local/mlflows3;
       mc anonymous set none local/mlflows3;
-      mc mb -p local/diabetic-project;
+      mc mb -p local/real-estate-project;
       exit 0;
       "
     restart: "no"

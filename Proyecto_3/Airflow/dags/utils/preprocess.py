@@ -1,304 +1,221 @@
+import hashlib
+import logging
 import os
 from datetime import datetime
 
 import joblib
+import numpy as np
 import pandas as pd
+from botocore.exceptions import ClientError
 from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OrdinalEncoder, StandardScaler
 
-from .db_schema import (
-    delete_table_if_exists,
-    create_table_cleaned,
-    create_processed_batches_table,
-)
+from .db_schema import create_table_clean, delete_table_if_exists
 from .storage_utils import connect_to_minio
 
-from botocore.exceptions import ClientError
+logger = logging.getLogger(__name__)
+
+NUMERIC_FEATURES = ["bed", "bath", "acre_lot", "house_size"]
+HIGH_CARD_CATEGORICAL = ["brokered_by", "street", "city", "state", "zip_code"]
+LOW_CARD_CATEGORICAL = ["status"]
+DATE_FEATURE = "prev_sold_date"
+
+MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "real-estate-project")
 
 
-def ensure_bucket_exists(s3_client, bucket_name):
+def _ensure_bucket(s3_client, bucket):
     try:
-        s3_client.head_bucket(Bucket=bucket_name)
-        print(f"El bucket '{bucket_name}' ya existe en MinIO")
-    except ClientError as e:
-        error_code = e.response.get("Error", {}).get("Code")
-
-        if error_code in ["404", "NoSuchBucket"]:
-            print(f"El bucket '{bucket_name}' no existe. Creando bucket...")
-            s3_client.create_bucket(Bucket=bucket_name)
-            print(f"Bucket '{bucket_name}' creado en MinIO")
+        s3_client.head_bucket(Bucket=bucket)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in ("404", "NoSuchBucket"):
+            s3_client.create_bucket(Bucket=bucket)
+            logger.info("Bucket '%s' created in MinIO", bucket)
         else:
             raise
 
-def preprocess_and_insert(
+
+def _parse_date_features(df):
+    """Extracts year, month and days-since-reference from prev_sold_date."""
+    if DATE_FEATURE in df.columns:
+        parsed = pd.to_datetime(df[DATE_FEATURE], errors="coerce")
+        df["prev_sold_year"] = parsed.dt.year.astype("float64")
+        df["prev_sold_month"] = parsed.dt.month.astype("float64")
+        ref = pd.Timestamp("2025-01-01")
+        df["prev_sold_days_ago"] = (ref - parsed).dt.days.astype("float64")
+    else:
+        df["prev_sold_year"] = np.nan
+        df["prev_sold_month"] = np.nan
+        df["prev_sold_days_ago"] = np.nan
+    return df
+
+
+def _deterministic_split(series_id):
+    """80/20 train-test split using MD5 hash of row id (stable across reruns)."""
+    return series_id.apply(
+        lambda x: "test"
+        if int(hashlib.md5(str(x).encode()).hexdigest(), 16) % 10 < 2
+        else "train"
+    )
+
+
+def preprocess_and_store(
     connection,
     raw_table,
-    cleaned_table,
-    split_table,
+    clean_table,
     batch_id,
-    bucket,
-    preprocessor_path,
-    processed_table="diabetic_data_processed_batches",
-    test_size=0.2,
-    random_state=42,
+    bucket=MINIO_BUCKET,
+    preprocessor_path="preprocessor",
 ):
-    """Preprocesa datos, versiona el preprocessor y carga la tabla limpia."""
-    # 1. Cargar datos crudos desde PostgreSQL con asignacion train/test
-    query = f"""
-        SELECT r.*, s.dataset
-        FROM {raw_table} r
-        LEFT JOIN {split_table} s
-            ON r.source_record_id = s.source_record_id
     """
-    df = pd.read_sql_query(query, connection)
-    print(f"Datos crudos cargados: {len(df)} filas")
+    Fits a preprocessing pipeline on training data, transforms all rows and
+    writes the result to clean_table.  Saves the fitted preprocessor to MinIO
+    and returns a version string for audit tracking.
 
-    # 1.1 Definir reglas para eliminar columnas con demasiados nulos o cardinalidad alta
-    max_cardinality = 100
-    max_null_ratio = 0.4
-    # Columnas de control que no deben evaluarse como features
-    excluded_cols = {
-        "id",
-        "batch_id",
-        "load_timestamp",
-        "data_source",
-        "record_status",
-        "source_record_id",
-        "row_hash",
-        "dataset",
-    }
-    # Candidatas para analisis de calidad (excluye target)
-    candidate_cols = [
-        col for col in df.columns if col not in excluded_cols and col != "readmitted"
-    ]
+    Unknown categories seen at transform time are mapped to -1 via OrdinalEncoder
+    (handle_unknown='use_encoded_value') so new cities / states don't crash
+    the pipeline.
+    """
+    df = pd.read_sql_query(f"SELECT * FROM {raw_table}", connection)
+    if df.empty:
+        raise ValueError("Raw table is empty — nothing to preprocess")
 
-    # Columnas con demasiados nulos
-    high_null_cols = [
-        col for col in candidate_cols if df[col].isna().mean() > max_null_ratio
-    ]
-    # Columnas con alta cardinalidad
-    high_card_cols = [
-        col for col in candidate_cols if df[col].nunique(dropna=True) > max_cardinality
-    ]
-    # Conjunto final de columnas a eliminar
-    removed_cols = set(high_null_cols + high_card_cols)
-    if removed_cols:
-        print(
-            "Columnas eliminadas por cardinalidad o nulos: "
-            + ", ".join(sorted(removed_cols))
-        )
-        df = df.drop(columns=removed_cols)
+    logger.info("Loaded %d rows from %s", len(df), raw_table)
 
-    # 2. Filtrar registros sin asignacion de dataset
-    missing_dataset = df["dataset"].isna().sum()
-    if missing_dataset > 0:
-        print(f"Filas sin dataset asignado: {missing_dataset}. Se omitiran.")
-        df = df.dropna(subset=["dataset"])
+    # Parse dates
+    df = _parse_date_features(df)
 
-    # 3. Definir columnas de caracteristicas y target
-    target_col = "readmitted"
-    # Variables numericas
-    num_cols = [
-        "time_in_hospital",
-        "num_lab_procedures",
-        "num_procedures",
-        "num_medications",
-        "number_outpatient",
-        "number_emergency",
-        "number_inpatient",
-        "number_diagnoses",
-    ]
-    # Variables categoricas
-    cat_cols = [
-        "race",
-        "gender",
-        "age",
-        "weight",
-        "admission_type_id",
-        "discharge_disposition_id",
-        "admission_source_id",
-        "payer_code",
-        "medical_specialty",
-        "diag_1",
-        "diag_2",
-        "diag_3",
-        "max_glu_serum",
-        "a1cresult",
-        "metformin",
-        "repaglinide",
-        "nateglinide",
-        "chlorpropamide",
-        "glimepiride",
-        "acetohexamide",
-        "glipizide",
-        "glyburide",
-        "tolbutamide",
-        "pioglitazone",
-        "rosiglitazone",
-        "acarbose",
-        "miglitol",
-        "troglitazone",
-        "tolazamide",
-        "examide",
-        "citoglipton",
-        "insulin",
-        "glyburide-metformin",
-        "glipizide-metformin",
-        "glimepiride-pioglitazone",
-        "metformin-rosiglitazone",
-        "metformin-pioglitazone",
-        "change",
-        "diabetesmed",
-    ]
+    # Coerce numeric columns
+    for col in NUMERIC_FEATURES:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Eliminar columnas descartadas por calidad
-    num_cols = [col for col in num_cols if col not in removed_cols]
-    cat_cols = [col for col in cat_cols if col not in removed_cols]
+    # Drop rows with missing target
+    before = len(df)
+    df = df.dropna(subset=["price"])
+    df["price"] = df["price"].astype(float)
+    logger.info("Dropped %d rows with missing price", before - len(df))
 
-    # Unir lista final de features
-    feature_cols = num_cols + cat_cols
-    # Asegurar columnas faltantes con None
-    for col in feature_cols + [target_col]:
-        if col not in df.columns and col not in removed_cols:
-            df[col] = None
+    # Deterministic train/test split using row id
+    df["dataset"] = _deterministic_split(df["id"])
 
-    # 4. Separar caracteristicas y variable objetivo
+    # Feature lists
+    date_features = ["prev_sold_year", "prev_sold_month", "prev_sold_days_ago"]
+    num_cols = [c for c in NUMERIC_FEATURES + date_features if c in df.columns]
+    high_cat_cols = [c for c in HIGH_CARD_CATEGORICAL if c in df.columns]
+    low_cat_cols = [c for c in LOW_CARD_CATEGORICAL if c in df.columns]
+    feature_cols = num_cols + high_cat_cols + low_cat_cols
+
     X = df[feature_cols].copy()
-    y = df[target_col].copy()
+    y = df["price"]
 
-    # 5. Separar train/test usando asignacion persistente
     train_mask = df["dataset"] == "train"
     test_mask = df["dataset"] == "test"
-    X_train = X[train_mask]
-    y_train = y[train_mask]
-    X_test = X[test_mask]
-    y_test = y[test_mask]
+    X_train, X_test = X[train_mask], X[test_mask]
+    y_train, y_test = y[train_mask], y[test_mask]
 
-    print(f"Entrenamiento: {len(X_train)} filas, Prueba: {len(X_test)} filas")
+    logger.info("Train: %d rows, Test: %d rows", len(X_train), len(X_test))
 
-    # 6. Crear pipeline de preprocesamiento
-    # Imputacion y escalado para numericas
-    numeric_pipe = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
-        ]
-    )
-    # Imputacion y one-hot para categoricas
-    categorical_pipe = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-        ]
-    )
+    if X_train.empty:
+        raise ValueError("Training split is empty after preprocessing")
 
-    # Combinar transformaciones
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ("num", numeric_pipe, num_cols),
-            ("cat", categorical_pipe, cat_cols),
-        ],
-        remainder="drop",
-    )
+    # Build pipelines
+    numeric_pipe = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
+    ])
+    # OrdinalEncoder with handle_unknown='use_encoded_value' maps unseen categories
+    # to -1 instead of raising an error, keeping the pipeline robust to new data.
+    high_cat_pipe = Pipeline([
+        ("imputer", SimpleImputer(strategy="constant", fill_value="unknown")),
+        ("encoder", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)),
+    ])
+    low_cat_pipe = Pipeline([
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("encoder", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)),
+    ])
 
-    # 7. Ajustar el preprocesador solo con datos de entrenamiento
+    transformers = []
+    if num_cols:
+        transformers.append(("num", numeric_pipe, num_cols))
+    if high_cat_cols:
+        transformers.append(("high_cat", high_cat_pipe, high_cat_cols))
+    if low_cat_cols:
+        transformers.append(("low_cat", low_cat_pipe, low_cat_cols))
+
+    preprocessor = ColumnTransformer(transformers=transformers, remainder="drop")
     preprocessor.fit(X_train)
 
-    # 8. Transformar ambos conjuntos de datos
     X_train_p = preprocessor.transform(X_train)
     X_test_p = preprocessor.transform(X_test)
 
-    print("Dimensiones tras el preprocesamiento:")
-    print(f"  X_train_p: {X_train_p.shape}")
-    print(f"  X_test_p:  {X_test_p.shape}")
+    feature_names_out = preprocessor.get_feature_names_out().tolist()
+    sanitized = [
+        n.replace("__", "_").replace(" ", "_").replace("-", "_")
+        for n in feature_names_out
+    ]
 
-    # 9. Guardar el preprocesador en MinIO (version por batch)
-    minio_client = connect_to_minio()
-    ensure_bucket_exists(minio_client, bucket)
+    # Persist preprocessor to MinIO
+    minio = connect_to_minio()
+    _ensure_bucket(minio, bucket)
 
-    # Generar version del preprocesador
     processed_at = datetime.utcnow()
-    preprocessor_version = f"batch_{batch_id}_{processed_at.strftime('%Y%m%d%H%M%S')}"
+    version = f"batch_{batch_id}_{processed_at.strftime('%Y%m%d%H%M%S')}"
 
-    # Guardar localmente antes de subir
-    local_dir = os.path.join(preprocessor_path, preprocessor_version)
+    local_dir = os.path.join(preprocessor_path, version)
     os.makedirs(local_dir, exist_ok=True)
     local_path = os.path.join(local_dir, "preprocessor.joblib")
     joblib.dump(preprocessor, local_path)
-    print(f"Preprocesador guardado localmente en: {local_path}")
 
-    # Subir artefacto a MinIO
-    remote_key = f"preprocess/{preprocessor_version}/preprocessor.joblib"
-    print(f"Subiendo preprocesador al bucket '{bucket}' en MinIO...")
-    minio_client.upload_file(local_path, bucket, remote_key)
-    print("Preprocesador subido a MinIO exitosamente")
+    remote_key = f"preprocess/{version}/preprocessor.joblib"
+    minio.upload_file(local_path, bucket, remote_key)
+    logger.info("Preprocessor saved to MinIO: %s", remote_key)
 
-    # 10. Crear DataFrames con los datos procesados
-    n_features = X_train_p.shape[1]
-    feature_cols_out = preprocessor.get_feature_names_out().tolist()
-    print(f"Nombres de caracteristicas: {feature_cols_out}")
+    # Build clean DataFrames
+    train_ids = df.loc[train_mask, "id"].values
+    test_ids = df.loc[test_mask, "id"].values
 
-    # Sanitizar nombres para PostgreSQL
-    sanitized_cols = [
-        name.replace("__", "_").replace(" ", "_").replace("-", "_")
-        for name in feature_cols_out
-    ]
-
-    # Construir dataset de entrenamiento
-    df_train = pd.DataFrame(X_train_p, columns=sanitized_cols)
+    df_train = pd.DataFrame(X_train_p, columns=sanitized)
+    df_train["batch_id"] = batch_id
+    df_train["source_record_id"] = train_ids
     df_train["dataset"] = "train"
-    df_train[target_col] = y_train.values
+    df_train["price"] = y_train.values
 
-    # Construir dataset de prueba
-    df_test = pd.DataFrame(X_test_p, columns=sanitized_cols)
+    df_test = pd.DataFrame(X_test_p, columns=sanitized)
+    df_test["batch_id"] = batch_id
+    df_test["source_record_id"] = test_ids
     df_test["dataset"] = "test"
-    df_test[target_col] = y_test.values
+    df_test["price"] = y_test.values
 
-    # Unir ambos conjuntos en un solo DataFrame
-    df_processed = pd.concat([df_train, df_test], ignore_index=True)
+    df_clean = pd.concat([df_train, df_test], ignore_index=True)
 
-    print(f"Datos procesados: {len(df_processed)} filas, {n_features} caracteristicas")
+    # Recreate clean table (handles schema changes across batches)
+    delete_table_if_exists(connection, clean_table)
+    create_table_clean(connection, clean_table, sanitized, "price")
 
-    # 11. Re-crear la tabla limpia en cada iteracion para soportar
-    # cambios en columnas por nuevas categorias del one-hot encoding
-    delete_table_if_exists(connection, cleaned_table)
-    create_table_cleaned(connection, cleaned_table, sanitized_cols, target_col)
+    all_cols = ["batch_id", "source_record_id", "dataset"] + sanitized + ["price"]
+    quoted_cols = ", ".join(f'"{c}"' for c in all_cols)
+    placeholders = ", ".join(["%s"] * len(all_cols))
 
-    # 12. Insertar datos procesados en la tabla limpia
-    columns = ", ".join(
-        [f'"{col}"' for col in sanitized_cols] + ["dataset", target_col]
-    )
-    placeholders = ", ".join(["%s"] * (n_features + 2))
-    insert_query = f"INSERT INTO {cleaned_table} ({columns}) VALUES ({placeholders})"
-
-    # Convertir DataFrame a lista de tuplas para insercion
-    values = [tuple(row) for row in df_processed.values]
+    values = [tuple(row) for row in df_clean[all_cols].values]
     cursor = connection.cursor()
-    cursor.executemany(insert_query, values)
-    connection.commit()
-    cursor.close()
-    print(f"Se insertaron {len(values)} filas en la tabla '{cleaned_table}'")
-
-    # 13. Registrar versionamiento del batch procesado
-    create_processed_batches_table(connection, processed_table)
-    cursor = connection.cursor()
-    cursor.execute(
-        f"""
-        INSERT INTO {processed_table}
-            (batch_id, processed_at, preprocessor_version, rows_total, rows_train, rows_test)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        """,
-        (
-            batch_id,
-            processed_at,
-            preprocessor_version,
-            len(df_processed),
-            len(df_train),
-            len(df_test),
-        ),
+    cursor.executemany(
+        f"INSERT INTO {clean_table} ({quoted_cols}) VALUES ({placeholders})", values
     )
     connection.commit()
     cursor.close()
-    print(f"Version del batch registrada: {preprocessor_version}")
+
+    logger.info(
+        "Inserted %d rows into %s (%d features)",
+        len(values), clean_table, len(sanitized),
+    )
+
+    return {
+        "preprocessor_version": version,
+        "records_processed": len(df_clean),
+        "train_count": len(df_train),
+        "test_count": len(df_test),
+        "feature_count": len(sanitized),
+    }

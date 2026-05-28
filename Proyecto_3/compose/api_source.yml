@@ -2,22 +2,9 @@
 # Sirve datos por batches; el DAG de Airflow se conecta a este servicio como api-data.
 
 services:
-  api:
+  api-source:
     image: cristiandiaz13/mlops-puj:data-api-pf-v1
     container_name: SourceAPI
     ports:
-      - "8000:8000"
-    environment:
-      MLFLOW_TRACKING_URI: http://mlflow:5000
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
-      POSTGRES_DATASET_HOST: postgres-dataset
-      POSTGRES_DATASET_PORT: "5432"
-      POSTGRES_DATASET_USER: airflow
-      POSTGRES_DATASET_PASSWORD: airflow
-      POSTGRES_DATASET_DATABASE: diabetic_data
-    depends_on:
-      - mlflow
-      - postgres-dataset
+      - "8001:80"
     restart: always

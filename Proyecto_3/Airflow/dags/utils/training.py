@@ -1,299 +1,213 @@
-import os
 import json
+import logging
+import os
 import tempfile
 from datetime import datetime
 
 import mlflow
 import mlflow.sklearn
-import joblib
-from mlflow.exceptions import MlflowException
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
+from mlflow.exceptions import MlflowException
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import ParameterGrid
-from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    classification_report,
-    confusion_matrix,
-    roc_auc_score,
-)
-from sklearn.preprocessing import label_binarize
 from sklearn.pipeline import Pipeline
 
 from .storage_utils import connect_to_minio
 
+logger = logging.getLogger(__name__)
 
-def _compute_metrics(
-    y_true, y_pred, y_prob=None, class_label="<30", class_metric_name="lt30"
-):
-    metrics = {
-        "accuracy": accuracy_score(y_true, y_pred),
-        "precision_macro": precision_score(
-            y_true, y_pred, average="macro", zero_division=0
-        ),
-        "recall_macro": recall_score(y_true, y_pred, average="macro", zero_division=0),
-        "f1_macro": f1_score(y_true, y_pred, average="macro", zero_division=0),
-        "f1_weighted": f1_score(
-            y_true, y_pred, average="weighted", zero_division=0
-        ),
-    }
+REGISTERED_MODEL_NAME = os.environ.get(
+    "MLFLOW_REGISTERED_MODEL", "real-estate-price-model"
+)
+EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT", "real-estate-price")
+MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "real-estate-project")
 
-    class_report = classification_report(
-        y_true, y_pred, output_dict=True, zero_division=0
-    )
-    if class_label in class_report:
-        metrics[f"recall_{class_metric_name}"] = class_report[class_label]["recall"]
-        metrics[f"precision_{class_metric_name}"] = class_report[class_label]["precision"]
-        metrics[f"f1_{class_metric_name}"] = class_report[class_label]["f1-score"]
-
-    if y_prob is not None:
-        try:
-            classes = sorted(pd.Series(y_true).unique().tolist())
-            y_true_bin = label_binarize(y_true, classes=classes)
-            if y_prob.shape[1] == y_true_bin.shape[1]:
-                metrics["roc_auc_ovr"] = roc_auc_score(
-                    y_true_bin, y_prob, average="macro", multi_class="ovr"
-                )
-        except Exception:
-            pass
-
-    return metrics, class_report
+PARAM_GRID = {
+    "n_estimators": [100, 200],
+    "max_depth": [None, 15],
+    "random_state": [42],
+}
 
 
-def _get_preprocessor_version(connection, processed_table, batch_id=None):
-    cursor = connection.cursor()
-    if batch_id is None:
-        cursor.execute(
-            f"""
-            SELECT preprocessor_version
-            FROM {processed_table}
-            ORDER BY processed_at DESC
-            LIMIT 1
-            """
-        )
-    else:
-        cursor.execute(
-            f"""
-            SELECT preprocessor_version
-            FROM {processed_table}
-            WHERE batch_id = %s
-            ORDER BY processed_at DESC
-            LIMIT 1
-            """,
-            (batch_id,),
-        )
-
-    row = cursor.fetchone()
-    cursor.close()
-    return row[0] if row else None
+def _compute_metrics(y_true, y_pred):
+    """Returns MAE, RMSE, R² and MAPE as a flat dict."""
+    mae = float(mean_absolute_error(y_true, y_pred))
+    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+    ss_res = float(np.sum((np.array(y_true) - np.array(y_pred)) ** 2))
+    ss_tot = float(np.sum((np.array(y_true) - np.mean(y_true)) ** 2))
+    r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+    nonzero = np.where(np.array(y_true) != 0, np.array(y_true), 1)
+    mape = float(np.mean(np.abs((np.array(y_true) - np.array(y_pred)) / nonzero))) * 100
+    return {"mae": mae, "rmse": rmse, "r2": r2, "mape": mape}
 
 
-def _load_preprocessor_from_minio(bucket, preprocessor_version, prefix="preprocess"):
-    minio_client = connect_to_minio()
-    remote_key = f"{prefix}/{preprocessor_version}/preprocessor.joblib"
+def _load_preprocessor(bucket, version, prefix="preprocess"):
+    """Downloads the versioned preprocessor from MinIO and returns it."""
+    import joblib
+    minio = connect_to_minio()
+    remote_key = f"{prefix}/{version}/preprocessor.joblib"
+    with tempfile.TemporaryDirectory() as tmp:
+        local = os.path.join(tmp, "preprocessor.joblib")
+        minio.download_file(bucket, remote_key, local)
+        return joblib.load(local)
 
-    with tempfile.TemporaryDirectory() as temp_dir:
-        local_path = os.path.join(temp_dir, "preprocessor.joblib")
-        minio_client.download_file(bucket, remote_key, local_path)
-        return joblib.load(local_path)
+
+def _setup_experiment(client, experiment_full_name):
+    """Creates or restores a named MLflow experiment."""
+    experiment = client.get_experiment_by_name(experiment_full_name)
+    if experiment is not None and experiment.lifecycle_stage == "deleted":
+        client.restore_experiment(experiment.experiment_id)
+    mlflow.set_experiment(experiment_full_name)
 
 
-def train_and_register_models(
+def train_candidate(
     connection,
-    cleaned_table,
-    batch_id=None,
-    preprocessor_bucket=None,
-    preprocessor_prefix="preprocess",
-    processed_table="diabetic_data_processed_batches",
-    experiment_name="diabetic-readmission",
-    registered_model_name="diabetic-readmission-model",
-    primary_metric_name="recall_lt30",
+    clean_table,
+    batch_id,
+    preprocessor_version=None,
+    training_reasons=None,
+    registered_model_name=REGISTERED_MODEL_NAME,
+    experiment_name=EXPERIMENT_NAME,
+    preprocessor_bucket=MINIO_BUCKET,
 ):
-    """Entrena modelos, registra en MLflow y promueve el mejor a production."""
-    # Cargar datos procesados desde PostgreSQL
-    df = pd.read_sql_query(f"SELECT * FROM {cleaned_table}", connection)
+    """
+    Trains RandomForestRegressor configs on the clean table data, logs every
+    run to MLflow and returns the run_id of the best config (lowest test MAE).
+
+    The model is NOT promoted here — promotion is handled by promote_model.
+    """
+    df = pd.read_sql_query(f"SELECT * FROM {clean_table}", connection)
     if df.empty:
-        print("No hay datos procesados para entrenar.")
-        return
+        raise ValueError("Clean table is empty — cannot train")
 
-    # Separar features y target
-    target_col = "readmitted"
+    target_col = "price"
     if target_col not in df.columns:
-        raise ValueError("La columna target 'readmitted' no existe en la tabla limpia.")
-
-    if "dataset" not in df.columns:
-        raise ValueError("La columna 'dataset' no existe en la tabla limpia.")
+        raise ValueError(f"Target column '{target_col}' not found in {clean_table}")
 
     feature_cols = [
-        col for col in df.columns if col not in ["id", "dataset", target_col]
+        c for c in df.columns
+        if c not in ("id", "batch_id", "source_record_id", "dataset", target_col)
     ]
     if not feature_cols:
-        raise ValueError("No hay columnas de features disponibles para entrenar.")
+        raise ValueError("No feature columns found in clean table")
 
     X = df[feature_cols]
-    y = df[target_col].astype(str)
-
-    # Separar train/test segun el split persistente
+    y = df[target_col].astype(float)
     train_mask = df["dataset"] == "train"
     test_mask = df["dataset"] == "test"
 
-    X_train = X[train_mask]
-    y_train = y[train_mask]
-    X_test = X[test_mask]
-    y_test = y[test_mask]
+    X_train, y_train = X[train_mask], y[train_mask]
+    X_test, y_test = X[test_mask], y[test_mask]
 
     if X_train.empty or X_test.empty:
-        raise ValueError("Train o test estan vacios. Verifica el split.")
+        raise ValueError("Train or test split is empty after reading clean table")
 
-    # Configurar MLflow
     mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
-
-    experiment_suffix = datetime.utcnow().strftime("%Y%m%d")
-    experiment_full_name = f"{experiment_name}_{experiment_suffix}"
-
     client = mlflow.MlflowClient()
 
-    experiment = client.get_experiment_by_name(experiment_full_name)
+    experiment_full = f"{experiment_name}_{datetime.utcnow().strftime('%Y%m%d')}"
+    _setup_experiment(client, experiment_full)
 
-    if experiment is not None and experiment.lifecycle_stage == "deleted":
-        client.restore_experiment(experiment.experiment_id)
-
-    mlflow.set_experiment(experiment_full_name)
-
-    # Definir modelos candidatos y grids pequenos
-    candidates = [
-        # (
-        #     "logistic",
-        #     LogisticRegression,
-        #     {
-        #         "C": [0.1, 1.0],
-        #         "max_iter": [1000],
-        #         "solver": ["lbfgs"],
-        #         "class_weight": ["balanced"],
-        #     },
-        # ),
-        (
-            "random_forest",
-            RandomForestClassifier,
-            {
-                "n_estimators": [100, 200],
-                "max_depth": [None, 10],
-                "random_state": [42],
-                "class_weight": ["balanced"],
-            },
-        ),
-    ]
-
-    best_metric = None
-    best_run_id = None
-
-    # Justificacion de metrica principal
-    primary_metric_justification = (
-        "En un problema clinico, es critico minimizar falsos negativos para "
-        "readmision <30 dias, por eso se prioriza recall de la clase <30."
-    )
-
-    # Asegurar que el modelo registrado exista
+    # Ensure model registry entry exists
     try:
         client.get_registered_model(registered_model_name)
     except MlflowException:
         client.create_registered_model(registered_model_name)
 
+    # Load preprocessor for pipeline creation
     preprocessor = None
-    if preprocessor_bucket:
-        preprocessor_version = _get_preprocessor_version(
-            connection, processed_table, batch_id
-        )
+    if preprocessor_version and preprocessor_bucket:
+        try:
+            preprocessor = _load_preprocessor(preprocessor_bucket, preprocessor_version)
+            logger.info("Preprocessor loaded: %s", preprocessor_version)
+        except Exception as exc:
+            logger.warning("Could not load preprocessor: %s", exc)
+
+    best_mae = None
+    best_run_id = None
+    batch_tag = f"batch_{batch_id}"
+
+    with mlflow.start_run(run_name=f"rf_{batch_tag}"):
+        mlflow.set_tag("batch_id", str(batch_id))
+        mlflow.set_tag("model_type", "RandomForestRegressor")
+        mlflow.set_tag("primary_metric", "test_mae")
+        mlflow.set_tag("problem_type", "regression")
+        if training_reasons:
+            mlflow.set_tag("training_reasons", json.dumps(training_reasons)[:500])
         if preprocessor_version:
-            preprocessor = _load_preprocessor_from_minio(
-                preprocessor_bucket, preprocessor_version, preprocessor_prefix
-            )
-            print(
-                "Preprocessor cargado para registrar el pipeline: "
-                f"{preprocessor_version}"
-            )
-        else:
-            print(
-                "No se encontro preprocessor versionado para el batch. "
-                "Se registrara el modelo sin preprocesador."
-            )
+            mlflow.set_tag("preprocessor_version", preprocessor_version)
 
-    # Entrenar y registrar cada modelo
-    for model_name, model_cls, param_grid in candidates:
-        batch_suffix = f"_batch_{batch_id}" if batch_id is not None else ""
-        with mlflow.start_run(run_name=f"{model_name}{batch_suffix}"):
-            mlflow.set_tag("group", "model")
-            mlflow.set_tag("model_name", model_name)
-            mlflow.set_tag("primary_metric", primary_metric_name)
-            mlflow.set_tag("primary_metric_justification", primary_metric_justification)
+        for idx, params in enumerate(list(ParameterGrid(PARAM_GRID)), start=1):
+            config_name = f"rf_{batch_tag}_cfg{idx:02d}"
+            with mlflow.start_run(run_name=config_name, nested=True):
+                mlflow.set_tag("batch_id", str(batch_id))
+                mlflow.log_params(params)
 
-            grid = list(ParameterGrid(param_grid))
-            for config_idx, params in enumerate(grid, start=1):
-                config_name = f"{model_name}{batch_suffix}_config_{config_idx:02d}"
-                with mlflow.start_run(run_name=config_name, nested=True):
-                    mlflow.set_tag("group", "config")
-                    mlflow.set_tag("model_name", model_name)
-                    mlflow.log_params(params)
+                model = RandomForestRegressor(**params)
+                model.fit(X_train, y_train)
 
-                    # Entrenar modelo final con todo el train
-                    final_model = model_cls(**params)
-                    final_model.fit(X_train, y_train)
+                train_metrics = _compute_metrics(y_train, model.predict(X_train))
+                test_metrics = _compute_metrics(y_test, model.predict(X_test))
 
-                    y_test_pred = final_model.predict(X_test)
-                    y_test_prob = None
-                    if hasattr(final_model, "predict_proba"):
-                        try:
-                            y_test_prob = final_model.predict_proba(X_test)
-                        except Exception:
-                            y_test_prob = None
+                mlflow.log_metrics({f"train_{k}": v for k, v in train_metrics.items()})
+                mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
 
-                    test_metrics, test_report = _compute_metrics(
-                        y_test, y_test_pred, y_test_prob
+                # Feature importances artifact
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".json", delete=False
+                ) as fp:
+                    importance = dict(
+                        zip(feature_cols, model.feature_importances_.tolist())
                     )
-                    mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
+                    top = dict(
+                        sorted(importance.items(), key=lambda x: x[1], reverse=True)[:20]
+                    )
+                    json.dump(top, fp, indent=2)
+                    fp.flush()
+                    mlflow.log_artifact(fp.name, artifact_path="feature_importance")
 
-                    report_path = "classification_report.json"
-                    with open(report_path, "w", encoding="utf-8") as report_file:
-                        json.dump(test_report, report_file, indent=2, ensure_ascii=False)
-                    mlflow.log_artifact(report_path)
+                # Register model as pipeline when preprocessor available
+                if preprocessor is not None:
+                    pipeline = Pipeline([
+                        ("preprocess", preprocessor),
+                        ("model", model),
+                    ])
+                    mlflow.sklearn.log_model(pipeline, name="model")
+                else:
+                    mlflow.sklearn.log_model(model, name="model")
 
-                    cm = confusion_matrix(y_test, y_test_pred)
-                    cm_path = "confusion_matrix.json"
-                    with open(cm_path, "w", encoding="utf-8") as cm_file:
-                        json.dump(cm.tolist(), cm_file)
-                    mlflow.log_artifact(cm_path)
+                test_mae = test_metrics["mae"]
+                if best_mae is None or test_mae < best_mae:
+                    best_mae = test_mae
+                    best_run_id = mlflow.active_run().info.run_id
 
-                    if preprocessor is not None:
-                        pipeline_model = Pipeline(
-                            steps=[("preprocess", preprocessor), ("model", final_model)]
-                        )
-                        mlflow.sklearn.log_model(pipeline_model, name="model")
-                    else:
-                        mlflow.sklearn.log_model(final_model, name="model")
+    logger.info(
+        "Training complete — best run_id=%s, test_mae=%.4f", best_run_id, best_mae
+    )
+    return {
+        "best_run_id": best_run_id,
+        "best_mae": best_mae,
+        "registered_model_name": registered_model_name,
+    }
 
-                    current_metric = test_metrics.get(primary_metric_name)
-                    if current_metric is not None:
-                        if best_metric is None or current_metric > best_metric:
-                            best_metric = current_metric
-                            best_run_id = mlflow.active_run().info.run_id
 
-    # Promover el mejor modelo a production
-    if best_run_id is not None:
-        model_uri = f"runs:/{best_run_id}/model"
-        model_version = client.create_model_version(
-            name=registered_model_name, source=model_uri, run_id=best_run_id
-        )
-        client.set_registered_model_alias(
-            registered_model_name, "production", model_version.version
-        )
-        print(
-            f"Modelo promovido a production: {registered_model_name} v{model_version.version}"
-        )
-    else:
-        print(
-            "No se promueve a production: no se encontro un modelo con metrica principal."
-        )
+def register_candidate(candidate_run_id, registered_model_name=REGISTERED_MODEL_NAME):
+    """
+    Creates a model version from the candidate run WITHOUT setting any alias.
+    Returns the new version number.
+    """
+    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
+    client = mlflow.MlflowClient()
+
+    model_uri = f"runs:/{candidate_run_id}/model"
+    version = client.create_model_version(
+        name=registered_model_name,
+        source=model_uri,
+        run_id=candidate_run_id,
+    )
+    logger.info(
+        "Registered %s v%s (run %s)", registered_model_name, version.version, candidate_run_id
+    )
+    return version.version

@@ -24,9 +24,12 @@ x-airflow-common:
     POSTGRES_DATASET_PORT: 5432
     POSTGRES_DATASET_USER: airflow
     POSTGRES_DATASET_PASSWORD: airflow
-    POSTGRES_DATASET_DATABASE: diabetic_data
-    # API_URL: http://api-data:80
-    # API_GROUP_NUMBER: 7
+    POSTGRES_DATASET_DATABASE: real_estate_data
+    DATA_API_URL: http://api-source:80
+    DATA_API_GROUP: "7"
+    MINIO_BUCKET: real-estate-project
+    MLFLOW_REGISTERED_MODEL: real-estate-price-model
+    MLFLOW_EXPERIMENT: real-estate-price
     MINIO_ENDPOINT: http://minio:9000
     MLFLOW_S3_ENDPOINT_URL: http://minio:9000
     AWS_ACCESS_KEY_ID: minioadmin
