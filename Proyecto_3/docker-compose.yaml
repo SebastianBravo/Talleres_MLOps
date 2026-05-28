@@ -1,0 +1,33 @@
+# Proyecto 1 - MLOps: compose unificado
+# Incluye: infra (MinIO, Postgres, MySQL, Redis), Airflow, API de datos y JupyterLab.
+#
+# Levantar todo:
+#   docker compose up -d --build
+#
+# Levantar solo infra o un stack (desde Proyecto_1):
+#   docker compose -f compose/minio.yml up -d
+#   docker compose -f compose/postgres.yml up -d
+#   docker compose -f compose/mysql.yml up -d
+#   docker compose -f compose/redis.yml up -d
+#   docker compose -f compose/airflow.yml up -d   # requiere minio, postgres, mysql, redis
+#   docker compose -f compose/data_api.yml up -d
+#   docker compose -f compose/jupyterlab.yml up -d
+#
+# Variables recomendadas en .env: AIRFLOW_UID, AIRFLOW_PROJ_DIR=../Airflow
+
+include:
+  - compose/minio.yml
+  - compose/postgres.yml
+  - compose/postgres-dataset.yml
+  # - compose/redis.yml
+  # - compose/airflow.yml
+  - compose/airflow-slim.yml
+  - compose/adminer.yml
+  - compose/mlflow.yml
+  # - compose/api.yml
+  # - compose/prometheus.yml
+  # - compose/grafana.yml
+  # - compose/streamlit.yml
+  # - compose/locust.yml
+  # - compose/jupyterlab.yml
+  # - compose/inference_api.yml
