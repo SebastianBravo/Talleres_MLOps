@@ -1,0 +1,86 @@
+name: Build & Push — Observabilidad (Prometheus, Grafana, Locust)
+
+on:
+  push:
+    branches: [main, "feature/**"]
+    paths:
+      - "Proyecto_3/prometheus/**"
+      - "Proyecto_3/grafana/**"
+      - "Proyecto_3/locust/**"
+      - ".github/workflows/build-observability.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "Proyecto_3/prometheus/**"
+      - "Proyecto_3/grafana/**"
+      - "Proyecto_3/locust/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Push ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: prometheus
+            context: ./Proyecto_3/prometheus
+            image_suffix: mlops-prometheus
+          - service: grafana
+            context: ./Proyecto_3/grafana
+            image_suffix: mlops-grafana
+          - service: locust
+            context: ./Proyecto_3/locust
+            image_suffix: mlops-locust
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to DockerHub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_suffix }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=dev,enable=${{ github.ref != 'refs/heads/main' && github.event_name != 'pull_request' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image_suffix }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image_suffix }}
+
+      - name: Image summary
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "### ${{ matrix.service }} publicado" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

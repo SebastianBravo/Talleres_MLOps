@@ -1,0 +1,91 @@
+name: Build & Push — Airflow
+
+# Builds two variants:
+#   mlops-airflow         → Dockerfile        (DAGs baked in, for Kubernetes)
+#   mlops-airflow-compose → Dockerfile.Compose (slim, for local dev with volumes)
+
+on:
+  push:
+    branches: [main, "feature/**"]
+    paths:
+      - "Proyecto_3/Airflow/Dockerfile"
+      - "Proyecto_3/Airflow/Dockerfile.Compose"
+      - "Proyecto_3/Airflow/requirements.txt"
+      - "Proyecto_3/Airflow/dags/**"
+      - ".github/workflows/build-airflow.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "Proyecto_3/Airflow/Dockerfile"
+      - "Proyecto_3/Airflow/Dockerfile.Compose"
+      - "Proyecto_3/Airflow/requirements.txt"
+      - "Proyecto_3/Airflow/dags/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Push ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: full
+            image_suffix: mlops-airflow
+            dockerfile: Dockerfile
+            description: "Imagen de producción (DAGs baked in, para Kubernetes)"
+          - variant: compose
+            image_suffix: mlops-airflow-compose
+            dockerfile: Dockerfile.Compose
+            description: "Imagen ligera para desarrollo local con volúmenes"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to DockerHub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_suffix }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=dev,enable=${{ github.ref != 'refs/heads/main' && github.event_name != 'pull_request' }}
+
+      - name: Build and push (${{ matrix.variant }})
+        uses: docker/build-push-action@v6
+        with:
+          context: ./Proyecto_3/Airflow
+          file: ./Proyecto_3/Airflow/${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image_suffix }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image_suffix }}
+
+      - name: Image summary
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "### ${{ matrix.variant }} — ${{ matrix.description }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
