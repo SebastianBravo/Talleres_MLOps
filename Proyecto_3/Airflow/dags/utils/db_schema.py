@@ -30,7 +30,13 @@ def create_table_raw(connection, table_name="property_raw"):
 
 
 def create_table_clean(connection, table_name, feature_names, target_name="price"):
-    """Creates clean data table with dynamic feature columns."""
+    """
+    Creates the clean data table with dynamic feature columns and a
+    preprocessor_version column that tracks which preprocessing run produced each row.
+
+    The table is append-only: rows from all preprocessing versions coexist,
+    and training always filters to the latest preprocessor_version.
+    """
     sanitized_cols = [
         name.replace("__", "_").replace(" ", "_").replace("-", "_")
         for name in feature_names
@@ -42,18 +48,21 @@ def create_table_clean(connection, table_name, feature_names, target_name="price
         batch_id INTEGER NOT NULL,
         source_record_id INTEGER,
         dataset VARCHAR(8) NOT NULL,
+        preprocessor_version VARCHAR(256) NOT NULL,
         {feature_columns},
         {target_name} DOUBLE PRECISION NOT NULL
     )
     """
     execute_query(connection, query)
-    print(f"Table {table_name} created with {len(feature_names)} feature columns")
+    # Migration guard: add column to tables created before versioning was introduced.
+    # IF NOT EXISTS makes this a no-op on newly created tables.
+    execute_query(
+        connection,
+        f"ALTER TABLE {table_name} "
+        f"ADD COLUMN IF NOT EXISTS preprocessor_version VARCHAR(256)",
+    )
+    print(f"Table {table_name} created/verified with {len(feature_names)} feature columns")
 
-
-def delete_table_if_exists(connection, table_name):
-    """Drops a table if it exists."""
-    execute_query(connection, f"DROP TABLE IF EXISTS {table_name}")
-    print(f"Table {table_name} dropped (if existed)")
 
 
 def create_batch_audit_table(connection, table_name="batch_audit"):

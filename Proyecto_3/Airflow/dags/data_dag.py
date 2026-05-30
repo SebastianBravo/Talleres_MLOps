@@ -236,7 +236,7 @@ def _preprocess_data(**context):
     ti.xcom_push(key="preprocess_result", value=result)
     print(
         f"Preprocessed {result['records_processed']} rows "
-        f"({result['train_count']} train / {result['test_count']} test), "
+        f"({result['train_count']} train / {result['val_count']} val / {result['test_count']} test), "
         f"version={result['preprocessor_version']}"
     )
 
@@ -575,7 +575,7 @@ def _on_task_failure(context):
 default_args = {
     "owner": "airflow",
     "retries": 2,
-    "retry_delay": timedelta(minutes=2),
+    "retry_delay": timedelta(minutes=1),
     "retry_exponential_backoff": False,
     "on_failure_callback": _on_task_failure,
 }
@@ -587,7 +587,7 @@ with DAG(
         "ingest → validate → drift → preprocess → decide → train → compare → promote"
     ),
     default_args=default_args,
-    schedule=timedelta(minutes=5),
+    schedule=timedelta(minutes=2),
     start_date=datetime(2026, 5, 27),
     max_active_runs=1,
     catchup=False,

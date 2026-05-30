@@ -6,7 +6,6 @@ from .db_schema import (
     create_inference_logs_table,
     create_table_clean,
     create_table_raw,
-    delete_table_if_exists,
 )
 from .dataset_io import BatchExhaustedError, fetch_batch_from_api, load_batch_from_tmpfile, save_batch_to_tmpfile
 from .drift_detection import detect_drift

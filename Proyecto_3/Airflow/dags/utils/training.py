@@ -65,6 +65,71 @@ def _setup_experiment(client, experiment_full_name):
     mlflow.set_experiment(experiment_full_name)
 
 
+def _get_git_commit():
+    """Returns the short commit SHA from env var or git subprocess; 'unknown' on failure."""
+    import subprocess
+    commit = os.environ.get("GIT_COMMIT", "")
+    if commit:
+        return commit[:12]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()[:12]
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _generate_performance_plots(y_true, y_pred, split_name, tmp_dir):
+    """
+    Generates predicted-vs-actual scatter and residuals histogram for a split.
+    Returns list of file paths saved to tmp_dir.
+    Uses Agg (non-interactive) matplotlib backend — safe inside Airflow workers.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    paths = []
+
+    # Predicted vs Actual
+    fig, ax = plt.subplots(figsize=(7, 6))
+    ax.scatter(y_true, y_pred, alpha=0.35, s=8, color="#4C72B0")
+    lo, hi = min(y_true.min(), y_pred.min()), max(y_true.max(), y_pred.max())
+    ax.plot([lo, hi], [lo, hi], "r--", linewidth=1.5, label="Perfect prediction")
+    ax.set_xlabel("Actual Price ($)")
+    ax.set_ylabel("Predicted Price ($)")
+    ax.set_title(f"Predicted vs Actual — {split_name}")
+    ax.legend()
+    fig.tight_layout()
+    p = os.path.join(tmp_dir, f"pred_vs_actual_{split_name}.png")
+    fig.savefig(p, dpi=100)
+    plt.close(fig)
+    paths.append(p)
+
+    # Residuals histogram
+    residuals = y_pred - y_true
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.hist(residuals, bins=60, color="#55A868", edgecolor="white", alpha=0.85)
+    ax.axvline(0, color="red", linestyle="--", linewidth=1.5, label="Zero error")
+    ax.set_xlabel("Residual (Predicted − Actual) ($)")
+    ax.set_ylabel("Count")
+    ax.set_title(f"Residual Distribution — {split_name}")
+    ax.legend()
+    fig.tight_layout()
+    p = os.path.join(tmp_dir, f"residuals_{split_name}.png")
+    fig.savefig(p, dpi=100)
+    plt.close(fig)
+    paths.append(p)
+
+    return paths
+
+
 def train_candidate(
     connection,
     clean_table,
@@ -81,17 +146,40 @@ def train_candidate(
 
     The model is NOT promoted here — promotion is handled by promote_model.
     """
-    df = pd.read_sql_query(f"SELECT * FROM {clean_table}", connection)
+    if preprocessor_version:
+        df = pd.read_sql_query(
+            f"SELECT * FROM {clean_table} WHERE preprocessor_version = %s",
+            connection,
+            params=(preprocessor_version,),
+        )
+    else:
+        logger.warning("No preprocessor_version provided — reading all clean data")
+        df = pd.read_sql_query(f"SELECT * FROM {clean_table}", connection)
+
     if df.empty:
-        raise ValueError("Clean table is empty — cannot train")
+        raise ValueError(
+            f"Clean table is empty for preprocessor_version='{preprocessor_version}' — cannot train"
+        )
 
     target_col = "price"
     if target_col not in df.columns:
         raise ValueError(f"Target column '{target_col}' not found in {clean_table}")
 
+    # Collect which batches are represented in the training data for audit/lineage
+    training_batch_ids = sorted(df["batch_id"].unique().tolist())
+
     feature_cols = [
-        c for c in df.columns
-        if c not in ("id", "batch_id", "source_record_id", "dataset", target_col)
+        c
+        for c in df.columns
+        if c
+        not in (
+            "id",
+            "batch_id",
+            "source_record_id",
+            "dataset",
+            "preprocessor_version",
+            target_col,
+        )
     ]
     if not feature_cols:
         raise ValueError("No feature columns found in clean table")
@@ -99,10 +187,13 @@ def train_candidate(
     X = df[feature_cols]
     y = df[target_col].astype(float)
     train_mask = df["dataset"] == "train"
+    val_mask = df["dataset"] == "val"
     test_mask = df["dataset"] == "test"
 
     X_train, y_train = X[train_mask], y[train_mask]
+    X_val, y_val = X[val_mask], y[val_mask]
     X_test, y_test = X[test_mask], y[test_mask]
+    has_val = not X_val.empty
 
     if X_train.empty or X_test.empty:
         raise ValueError("Train or test split is empty after reading clean table")
@@ -132,7 +223,10 @@ def train_candidate(
     batch_tag = f"batch_{batch_id}"
 
     with mlflow.start_run(run_name=f"rf_{batch_tag}"):
+        # Lineage and reproducibility tags
+        mlflow.set_tag("git_commit", _get_git_commit())
         mlflow.set_tag("batch_id", str(batch_id))
+        mlflow.set_tag("training_batches", json.dumps(training_batch_ids))
         mlflow.set_tag("model_type", "RandomForestRegressor")
         mlflow.set_tag("primary_metric", "test_mae")
         mlflow.set_tag("problem_type", "regression")
@@ -141,10 +235,30 @@ def train_candidate(
         if preprocessor_version:
             mlflow.set_tag("preprocessor_version", preprocessor_version)
 
+        # Preprocessing configuration params
+        mlflow.log_params({
+            "batch_count": len(training_batch_ids),
+            "batch_range": f"{training_batch_ids[0]}-{training_batch_ids[-1]}",
+            "preprocess_numeric_imputer": "median",
+            "preprocess_scaler": "StandardScaler",
+            "preprocess_cat_encoder": "OrdinalEncoder(unknown=-1)",
+            "preprocess_split": "70/15/15",
+            "feature_count": len(feature_cols),
+        })
+
         for idx, params in enumerate(list(ParameterGrid(PARAM_GRID)), start=1):
             config_name = f"rf_{batch_tag}_cfg{idx:02d}"
             with mlflow.start_run(run_name=config_name, nested=True):
+                mlflow.set_tag("git_commit", _get_git_commit())
                 mlflow.set_tag("batch_id", str(batch_id))
+                mlflow.set_tag("training_batches", json.dumps(training_batch_ids))
+                mlflow.set_tag("model_type", "RandomForestRegressor")
+                mlflow.set_tag("primary_metric", "test_mae")
+                mlflow.set_tag("problem_type", "regression")
+                if training_reasons:
+                    mlflow.set_tag("training_reasons", json.dumps(training_reasons)[:500])
+                if preprocessor_version:
+                    mlflow.set_tag("preprocessor_version", preprocessor_version)
                 mlflow.log_params(params)
 
                 model = RandomForestRegressor(**params)
@@ -156,7 +270,11 @@ def train_candidate(
                 mlflow.log_metrics({f"train_{k}": v for k, v in train_metrics.items()})
                 mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
 
-                # Feature importances artifact
+                if has_val:
+                    val_metrics = _compute_metrics(y_val, model.predict(X_val))
+                    mlflow.log_metrics({f"val_{k}": v for k, v in val_metrics.items()})
+
+                # Feature importances artifact (JSON)
                 with tempfile.NamedTemporaryFile(
                     mode="w", suffix=".json", delete=False
                 ) as fp:
@@ -169,6 +287,22 @@ def train_candidate(
                     json.dump(top, fp, indent=2)
                     fp.flush()
                     mlflow.log_artifact(fp.name, artifact_path="feature_importance")
+
+                # Performance plots (predicted vs actual, residuals)
+                with tempfile.TemporaryDirectory() as plot_dir:
+                    for plots in [
+                        _generate_performance_plots(
+                            y_test.values, model.predict(X_test), "test", plot_dir
+                        ),
+                        *(
+                            [_generate_performance_plots(
+                                y_val.values, model.predict(X_val), "val", plot_dir
+                            )]
+                            if has_val else []
+                        ),
+                    ]:
+                        for p in plots:
+                            mlflow.log_artifact(p, artifact_path="performance_plots")
 
                 # Register model as pipeline when preprocessor available
                 if preprocessor is not None:

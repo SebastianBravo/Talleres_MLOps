@@ -29,6 +29,8 @@ x-airflow-common:
     AWS_SECRET_ACCESS_KEY: minioadmin
     AWS_DEFAULT_REGION: us-east-1
     MLFLOW_TRACKING_URI: http://mlflow:5000
+    GIT_COMMIT: "${GIT_COMMIT:-local}"
+    GIT_PYTHON_REFRESH: quiet
   volumes:
     - ${AIRFLOW_PROJ_DIR:-./Airflow}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-./Airflow}/logs:/opt/airflow/logs

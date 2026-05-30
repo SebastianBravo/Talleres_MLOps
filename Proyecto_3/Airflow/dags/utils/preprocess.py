@@ -12,7 +12,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder, StandardScaler
 
-from .db_schema import create_table_clean, delete_table_if_exists
+from .db_schema import create_table_clean
 from .storage_utils import connect_to_minio
 
 logger = logging.getLogger(__name__)
@@ -53,12 +53,18 @@ def _parse_date_features(df):
 
 
 def _deterministic_split(series_id):
-    """80/20 train-test split using MD5 hash of row id (stable across reruns)."""
-    return series_id.apply(
-        lambda x: "test"
-        if int(hashlib.md5(str(x).encode()).hexdigest(), 16) % 10 < 2
-        else "train"
-    )
+    """
+    70/15/15 train/val/test split using MD5 hash of row id (stable across reruns).
+    Uses modulo 20: buckets 0-13 → train, 14-16 → val, 17-19 → test.
+    """
+    def _assign(x):
+        bucket = int(hashlib.md5(str(x).encode()).hexdigest(), 16) % 20
+        if bucket < 14:
+            return "train"
+        if bucket < 17:
+            return "val"
+        return "test"
+    return series_id.apply(_assign)
 
 
 def preprocess_and_store(
@@ -112,11 +118,15 @@ def preprocess_and_store(
     y = df["price"]
 
     train_mask = df["dataset"] == "train"
+    val_mask = df["dataset"] == "val"
     test_mask = df["dataset"] == "test"
-    X_train, X_test = X[train_mask], X[test_mask]
-    y_train, y_test = y[train_mask], y[test_mask]
+    X_train, X_val, X_test = X[train_mask], X[val_mask], X[test_mask]
+    y_train, y_val, y_test = y[train_mask], y[val_mask], y[test_mask]
 
-    logger.info("Train: %d rows, Test: %d rows", len(X_train), len(X_test))
+    logger.info(
+        "Train: %d rows, Val: %d rows, Test: %d rows",
+        len(X_train), len(X_val), len(X_test),
+    )
 
     if X_train.empty:
         raise ValueError("Training split is empty after preprocessing")
@@ -149,6 +159,7 @@ def preprocess_and_store(
     preprocessor.fit(X_train)
 
     X_train_p = preprocessor.transform(X_train)
+    X_val_p = preprocessor.transform(X_val) if not X_val.empty else None
     X_test_p = preprocessor.transform(X_test)
 
     feature_names_out = preprocessor.get_feature_names_out().tolist()
@@ -175,27 +186,43 @@ def preprocess_and_store(
 
     # Build clean DataFrames
     train_ids = df.loc[train_mask, "id"].values
+    val_ids = df.loc[val_mask, "id"].values
     test_ids = df.loc[test_mask, "id"].values
 
     df_train = pd.DataFrame(X_train_p, columns=sanitized)
     df_train["batch_id"] = batch_id
     df_train["source_record_id"] = train_ids
     df_train["dataset"] = "train"
+    df_train["preprocessor_version"] = version
     df_train["price"] = y_train.values
+
+    parts = [df_train]
+
+    if X_val_p is not None:
+        df_val = pd.DataFrame(X_val_p, columns=sanitized)
+        df_val["batch_id"] = batch_id
+        df_val["source_record_id"] = val_ids
+        df_val["dataset"] = "val"
+        df_val["preprocessor_version"] = version
+        df_val["price"] = y_val.values
+        parts.append(df_val)
+    else:
+        df_val = pd.DataFrame()
 
     df_test = pd.DataFrame(X_test_p, columns=sanitized)
     df_test["batch_id"] = batch_id
     df_test["source_record_id"] = test_ids
     df_test["dataset"] = "test"
+    df_test["preprocessor_version"] = version
     df_test["price"] = y_test.values
+    parts.append(df_test)
 
-    df_clean = pd.concat([df_train, df_test], ignore_index=True)
+    df_clean = pd.concat(parts, ignore_index=True)
 
-    # Recreate clean table (handles schema changes across batches)
-    delete_table_if_exists(connection, clean_table)
+    # Create table if it doesn't exist (append-only: never drop existing data).
     create_table_clean(connection, clean_table, sanitized, "price")
 
-    all_cols = ["batch_id", "source_record_id", "dataset"] + sanitized + ["price"]
+    all_cols = ["batch_id", "source_record_id", "dataset", "preprocessor_version"] + sanitized + ["price"]
     quoted_cols = ", ".join(f'"{c}"' for c in all_cols)
     placeholders = ", ".join(["%s"] * len(all_cols))
 
@@ -216,6 +243,7 @@ def preprocess_and_store(
         "preprocessor_version": version,
         "records_processed": len(df_clean),
         "train_count": len(df_train),
+        "val_count": len(df_val),
         "test_count": len(df_test),
         "feature_count": len(sanitized),
     }

@@ -37,6 +37,8 @@ x-airflow-common:
     AWS_DEFAULT_REGION: us-east-1
     MLFLOW_TRACKING_URI: http://mlflow:5000
     INFERENCE_API_URL: "http://api:8000"
+    GIT_COMMIT: "${GIT_COMMIT:-local}"
+    GIT_PYTHON_REFRESH: quiet
   volumes:
     - ${AIRFLOW_PROJ_DIR:-./Airflow}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-./Airflow}/logs:/opt/airflow/logs
