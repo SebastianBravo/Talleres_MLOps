@@ -512,6 +512,27 @@ def _reject_model(**context):
     print(f"Model rejected — {comparison.get('reason', 'no reason recorded')}")
 
 
+def _reload_inference_api(**context):
+    """Signals the inference API to load the newly promoted model from MLflow.
+
+    Only reached when promote_model succeeded, so no additional guard is needed.
+    A failed reload marks the task as failed and triggers on_failure_callback,
+    leaving the audit record in a consistent state.
+    """
+    from utils.inference_api import reload_inference_api
+
+    ti = context["ti"]
+    batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+    model_version = ti.xcom_pull(task_ids="register_candidate_in_mlflow", key="model_version")
+
+    response = reload_inference_api()
+
+    print(
+        f"Inference API reloaded — batch={batch_id}, "
+        f"model_version={model_version}, response={response}"
+    )
+
+
 def _notify_or_log_result(**context):
     """
     Final step: marks the batch as completed in the audit table regardless
@@ -673,6 +694,11 @@ with DAG(
         python_callable=_promote_model,
     )
 
+    reload_inference_api = PythonOperator(
+        task_id="reload_inference_api",
+        python_callable=_reload_inference_api,
+    )
+
     reject_model = PythonOperator(
         task_id="reject_model",
         python_callable=_reject_model,
@@ -722,7 +748,7 @@ with DAG(
         >> compare_with_production
         >> decide_promotion
     )
-    decide_promotion >> promote_model >> notify_or_log_result
+    decide_promotion >> promote_model >> reload_inference_api >> notify_or_log_result
     decide_promotion >> reject_model >> notify_or_log_result
 
     # Skip branch

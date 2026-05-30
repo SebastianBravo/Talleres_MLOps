@@ -22,7 +22,7 @@ Este documento describe en detalle el DAG principal del proyecto, su flujo, las 
 
 **DAG ID:** `real_estate_mlops`  
 **Archivo:** `dags/data_dag.py`  
-**Schedule:** cada 5 minutos (`timedelta(minutes=5)`)  
+**Schedule:** cada 2 minutos (`timedelta(minutes=2)`)  
 **Max active runs:** 1 (evita solapamiento entre ejecuciones)  
 **Catchup:** deshabilitado (no reprocesa ejecuciones pasadas)
 
@@ -35,7 +35,8 @@ El DAG implementa un pipeline MLOps completo e incremental para predicción de p
 5. Decide técnicamente si es necesario entrenar un modelo nuevo.
 6. Si entrena, compara el modelo candidato contra el productivo.
 7. Promueve o rechaza el candidato según reglas explícitas.
-8. Registra el resultado completo en la tabla de auditoría.
+8. Si el modelo es promovido, notifica a la API de inferencia para que recargue el modelo inmediatamente.
+9. Registra el resultado completo en la tabla de auditoría.
 
 El sistema **nunca borra datos crudos**. La tabla limpia es append-only versionada. Cada decisión queda registrada con su justificación técnica.
 
@@ -84,15 +85,17 @@ decide_training  ◄── BranchPythonOperator
   │                    │
   │               decide_promotion  ◄── BranchPythonOperator
   │                    │
-  │                    ├── [promote] ──► promote_model ──►─┐
-  │                    │                                   │
-  │                    └── [reject]  ──► reject_model  ──►─┤
-  │                                                        │
-  └── [skip] ──► skip_training ──────────────────────────►─┤
-                                                            │
-                                                      notify_or_log_result
-                                                            │
-                                                          end
+  │                    ├── [promote] ──► promote_model
+  │                    │                     │
+  │                    │               reload_inference_api ──►─┐
+  │                    │                                        │
+  │                    └── [reject]  ──► reject_model  ────────►─┤
+  │                                                              │
+  └── [skip] ──► skip_training ────────────────────────────────►─┤
+                                                                  │
+                                                          notify_or_log_result
+                                                                  │
+                                                                end
 ```
 
 ---
@@ -140,7 +143,7 @@ La API mantiene un cursor interno por grupo — cada petición avanza automátic
 **Casos de respuesta:**
 
 - **Lote disponible:** La API devuelve `{"data": [...], "batch_number": N}`. Los registros se serializan a un archivo temporal en `/tmp/airflow_batches/{run_id}_batch.json` y el `batch_id` se publica en XCom.
-- **Sin más lotes:** La API devuelve `{"detail": "..."}`. El callable lanza `AirflowSkipException`, que marca la ejecución completa como *skipped* (no como fallida). Esto es el comportamiento correcto: no es un error, simplemente no hay más datos disponibles.
+- **Sin más lotes:** La API devuelve HTTP 400 con `{"detail": "..."}`. El callable lanza `AirflowSkipException`, que marca la ejecución completa como *skipped* (no como fallida). Esto es el comportamiento correcto: no es un error, simplemente no hay más datos disponibles.
 - **Error de red o HTTP inesperado:** Se lanza `RuntimeError`, la tarea falla y se activan los reintentos.
 
 **XCom publicado:**
@@ -432,7 +435,7 @@ Entrena el modelo usando los datos limpios de la última `preprocessor_version`.
 6. Selecciona el mejor config según `test_mae` mínimo.
 7. Retorna el `run_id` del mejor run y su MAE en XCom.
 
-**Tags del run padre (lineage y configuración):**
+**Tags registrados en el run padre Y en cada run hijo:**
 
 | Tag | Valor | Descripción |
 |---|---|---|
@@ -459,7 +462,7 @@ Entrena el modelo usando los datos limpios de la última `preprocessor_version`.
 
 **Métricas registradas por run hijo:**
 
-| Prefijo | Splits | Métricas |
+| Prefijo | Split | Métricas |
 |---|---|---|
 | `train_` | train (70%) | mae, rmse, r2, mape |
 | `val_` | validación (15%) | mae, rmse, r2, mape |
@@ -550,9 +553,31 @@ client.set_registered_model_alias("real-estate-price-model", "production", model
 
 Usa el `model_version` del XCom de `register_candidate_in_mlflow` — **no crea una versión nueva**. Esto es crítico: un modelo promovido existe exactamente una vez en el registry.
 
-Después de esta tarea, FastAPI detectará el cambio de alias en su siguiente ciclo de verificación y cargará el nuevo modelo sin necesidad de redespliegue.
-
 Registra `batch_audit.model_promoted = True` y `promotion_reason`.
+
+---
+
+### `reload_inference_api`
+**Tipo:** `PythonOperator`  
+**Callable:** `_reload_inference_api`  
+**Archivo:** `utils/inference_api.py`
+
+Notifica a la API de inferencia que debe recargar el modelo productivo desde MLflow. Esta tarea **solo se ejecuta si `promote_model` tuvo éxito** — su posición en el grafo es la guardia: si la tarea corre, es porque hubo una nueva promoción.
+
+Internamente llama a `POST {INFERENCE_API_URL}/reload`. La API consulta MLflow por el alias `production` y carga el nuevo modelo en memoria sin necesidad de reiniciar el contenedor.
+
+```python
+response = reload_inference_api()
+# → {"status": "Modelo recargado", "previous_version": "3", "current_version": "4", ...}
+```
+
+**Por qué esta tarea y no un reload automático en la API:**
+
+La API podría consultar MLflow periódicamente por cambios de alias (polling). Sin embargo, eso introduce latencia variable entre la promoción y la disponibilidad del nuevo modelo. Con esta tarea, el modelo queda disponible en la API **en la misma ejecución del DAG que lo promovió**, sin delay adicional.
+
+**Comportamiento ante fallo:**
+
+Si la API está caída o responde con error, la tarea falla y activa `on_failure_callback`, registrando el batch como `failed` en auditoría. Esto es intencionado: un modelo promovido pero no recargado en la API es un estado inconsistente que merece atención.
 
 ---
 
@@ -569,7 +594,7 @@ Registra la razón del rechazo en `batch_audit.model_promoted = False` y `promot
 **Trigger Rule:** `NONE_FAILED_MIN_ONE_SUCCESS`  
 **Callable:** `_notify_or_log_result`
 
-Punto de convergencia de las tres ramas posibles (skip, promote, reject). Se ejecuta si al menos una rama tuvo éxito y ninguna falló.
+Punto de convergencia de las tres ramas posibles (skip, promote+reload, reject). Se ejecuta si al menos una rama tuvo éxito y ninguna falló.
 
 Marca el batch como completado: `batch_audit.execution_status = "success"` y `completed_at = NOW()`.
 
@@ -686,7 +711,7 @@ Si el test KS detectó que alguna variable numérica clave (`price`, `house_size
 
 ### Registro de decisión
 
-Independientemente del resultado, `batch_audit.should_train` y `batch_audit.training_reasons` registran la decisión con su justificación técnica completa, incluyendo el bloqueo del gate cuando aplica. Esta información es visible desde Streamlit.
+Independientemente del resultado, `batch_audit.should_train` y `batch_audit.training_reasons` registran la decisión con su justificación técnica completa, incluyendo el bloqueo del gate cuando aplica.
 
 ---
 
@@ -734,7 +759,7 @@ En todos los casos, `comparison_result.reason` documenta el resultado con los va
 - Rechazo por MAE: `"MAE improvement 1.80% < required 3%"`
 - Rechazo por RMSE: `"RMSE worsened 2.40% > tolerance 1%"`
 
-Esta razón se almacena en `batch_audit.promotion_reason` y es visible en Streamlit.
+Esta razón se almacena en `batch_audit.promotion_reason`.
 
 ---
 
@@ -781,7 +806,7 @@ Una fila por ejecución del DAG. Registra el ciclo de vida completo de cada batc
 CREATE TABLE batch_audit (
     id                      SERIAL PRIMARY KEY,
     batch_id                INTEGER UNIQUE NOT NULL,
-    run_id                  VARCHAR(128),         -- Airflow run ID
+    run_id                  VARCHAR(128),
     fetched_at              TIMESTAMP,
     records_received        INTEGER,
     records_stored          INTEGER,
@@ -795,38 +820,33 @@ CREATE TABLE batch_audit (
     should_train            BOOLEAN,
     training_reasons        JSONB,
     preprocessor_version    VARCHAR(256),
-    model_run_id            VARCHAR(128),         -- MLflow run ID del candidato
-    model_version           VARCHAR(64),          -- Versión en el registry
+    model_run_id            VARCHAR(128),
+    model_version           VARCHAR(64),
     model_promoted          BOOLEAN,
     promotion_reason        TEXT,
     candidate_mae           DOUBLE PRECISION,
     candidate_rmse          DOUBLE PRECISION,
     production_mae          DOUBLE PRECISION,
     production_rmse         DOUBLE PRECISION,
-    execution_status        VARCHAR(32),          -- running | success | failed | skipped_training
+    execution_status        VARCHAR(32),   -- running | success | failed | skipped_training
     completed_at            TIMESTAMP
 );
 ```
 
-Esta tabla es la fuente de verdad del historial visible en Streamlit.
-
 ### Tabla `inference_logs` — Log de inferencias
 
-Escrita por FastAPI (no por el DAG). Registra cada petición de predicción:
+Escrita por FastAPI (no por el DAG). Registra cada petición de predicción para monitoreo y análisis de uso:
 
 ```sql
 CREATE TABLE inference_logs (
-    id               SERIAL PRIMARY KEY,
-    request_id       UUID DEFAULT gen_random_uuid(),
-    requested_at     TIMESTAMP NOT NULL DEFAULT NOW(),
-    input_data       JSONB NOT NULL,
-    prediction       DOUBLE PRECISION,
+    request_id       UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+    requested_at     TIMESTAMP NOT NULL,
+    input_data       JSONB   NOT NULL,
+    predicted_price  FLOAT   NOT NULL,
     model_name       VARCHAR(128),
-    model_version    VARCHAR(64),
+    model_version    VARCHAR(32),
     model_alias      VARCHAR(64),
-    response_time_ms DOUBLE PRECISION,
-    status           VARCHAR(16),     -- success | error
-    error_message    TEXT
+    response_time_ms FLOAT   NOT NULL
 );
 ```
 
@@ -850,6 +870,8 @@ run padre: rf_batch_{N}           ← tags globales del batch
 
 El run padre agrupa los experimentos del batch. Los runs hijos contienen los detalles de cada configuración de hiperparámetros. El mejor run hijo es el que se registra en el Model Registry.
 
+Todos los tags de lineage se asignan tanto al run padre como a cada run hijo, de modo que cualquier run es buscable de forma independiente en la UI.
+
 ### Model Registry
 
 El modelo se gestiona bajo el nombre `real-estate-price-model` (configurable via `REGISTERED_MODEL_NAME`).
@@ -860,6 +882,7 @@ El modelo se gestiona bajo el nombre `real-estate-price-model` (configurable via
 1. register_candidate_in_mlflow → crea versión N (sin alias)
 2. compare_with_production      → compara métricas vs alias "production"
 3a. promote_model               → set alias "production" → versión N
+    reload_inference_api        → POST /reload → API carga versión N en memoria
 3b. reject_model                → sin cambios (versión N existe pero sin alias productivo)
 ```
 
@@ -868,12 +891,6 @@ El modelo se gestiona bajo el nombre `real-estate-price-model` (configurable via
 | Alias | Significado |
 |---|---|
 | `production` | Modelo actualmente servido por FastAPI |
-
-FastAPI carga el modelo con:
-```python
-model_uri = f"models:/real-estate-price-model@production"
-mlflow.sklearn.load_model(model_uri)
-```
 
 ### Artefactos almacenados por run
 
@@ -900,8 +917,8 @@ El preprocesador se guarda fuera del árbol de MLflow, directamente en el bucket
 
 ### Reintentos automáticos
 
-- **Todas las tareas:** 2 reintentos con espera de 2 minutos (configurado en `default_args`).
-- **`fetch_batch_from_api`:** 3 reintentos adicionales a nivel de tarea (total: 3 reintentos), dado que los errores de red son más frecuentes en el punto de entrada.
+- **Todas las tareas:** 2 reintentos con espera de 1 minuto (configurado en `default_args`).
+- **`fetch_batch_from_api`:** 3 reintentos a nivel de tarea, dado que los errores de red son más frecuentes en el punto de entrada.
 - **`train_candidate_model`:** Timeout de 2 horas para datasets grandes.
 
 ### `on_failure_callback`
@@ -912,11 +929,11 @@ El callback falla silenciosamente (no propaga excepciones) si ocurre durante una
 
 ### Fin de datos disponibles
 
-Cuando la API ya no tiene más lotes, `fetch_batch_from_api` lanza `AirflowSkipException`. Airflow marca la ejecución completa como *skipped* (no como *failed*). El scheduler puede continuar intentando en el siguiente intervalo, y cuando haya nuevos datos la ejecución procederá normalmente.
+Cuando la API ya no tiene más lotes, devuelve HTTP 400 con `{"detail": "..."}`. El callable detecta esta señal antes de llamar `raise_for_status()`, lanza `AirflowSkipException` y Airflow marca la ejecución completa como *skipped* (no como *failed*). El scheduler puede continuar intentando en el siguiente intervalo.
 
 ### Idempotencia del audit
 
-`create_batch_audit_entry` usa `ON CONFLICT (batch_id) DO NOTHING`. Si el mismo batch se reintenta, no se duplica la fila de auditoría sino que se actualiza.
+`create_batch_audit_entry` usa `ON CONFLICT (batch_id) DO NOTHING`. Si el mismo batch se reintenta, no se duplica la fila de auditoría.
 
 ### Protección contra lotes duplicados
 
@@ -942,10 +959,11 @@ El campo `row_hash` en `property_raw` permite detectar registros exactamente id�
 | `DB_NAME` | — | Nombre de la base de datos |
 | `DB_USER` | — | Usuario PostgreSQL |
 | `DB_PASSWORD` | — | Contraseña PostgreSQL |
+| `INFERENCE_API_URL` | `http://api:8000` | URL base de la API de inferencia para el reload |
 | `PROMOTION_MAE_IMPROVEMENT` | `0.03` | Mejora mínima de MAE para promover (fracción) |
 | `PROMOTION_RMSE_TOLERANCE` | `0.01` | Tolerancia máxima de empeoramiento de RMSE |
-| `MIN_BATCH_RATIO` | `0.05` | Fracción mínima que debe representar el batch sobre el histórico para evaluar criterios de entrenamiento. Ver sección 4 (Gate). |
-| `GIT_COMMIT` | — | SHA del commit que originó la imagen. Ver abajo. |
+| `MIN_BATCH_RATIO` | `0.05` | Fracción mínima que debe representar el batch sobre el histórico para evaluar criterios de entrenamiento |
+| `GIT_COMMIT` | — | SHA del commit que originó la imagen |
 | `GIT_PYTHON_REFRESH` | `quiet` | Suprime el warning de GitPython cuando git no está en el PATH del contenedor |
 
 ---
@@ -968,8 +986,6 @@ En el contenedor de Airflow **git no está instalado**, por lo que la variable d
 
 #### Configuración en GitHub Actions
 
-Cuando el workflow construye y publica la imagen de Airflow, debe inyectar `GIT_COMMIT` como *build arg* o como variable de entorno en el despliegue. La forma recomendada es pasarla como variable de entorno en el manifiesto de Kubernetes:
-
 **En el workflow de GitHub Actions** (`.github/workflows/build.yml`):
 ```yaml
 - name: Build and push Airflow image
@@ -986,49 +1002,33 @@ Cuando el workflow construye y publica la imagen de Airflow, debe inyectar `GIT_
 ```yaml
 env:
   - name: GIT_COMMIT
-    value: "${{ github.sha }}"   # sustituido por Argo CD / Kustomize
-```
-
-O, más limpio, vía ConfigMap que se actualiza en cada deploy:
-```yaml
-# k8s/configmap-airflow.yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: airflow-git-config
-data:
-  GIT_COMMIT: "abc123def456"   # actualizado por el workflow con sed o kustomize
+    value: "${{ github.sha }}"
 ```
 
 #### Configuración en Docker Compose (desarrollo local)
-
-Para desarrollo local, pasar el SHA del commit actual al levantar los servicios:
 
 ```bash
 GIT_COMMIT=$(git rev-parse HEAD) docker compose -f docker-compose.yaml up -d
 ```
 
-O añadir en el `docker-compose.yaml` (se lee del shell que ejecuta compose):
+O en el `docker-compose.yaml`:
 
 ```yaml
-# En el servicio airflow-worker / airflow-scheduler:
 environment:
   GIT_COMMIT: "${GIT_COMMIT:-local}"
 ```
 
-Así, si `GIT_COMMIT` no está definida en el shell, el valor fallback es `"local"`, que es descriptivo y no rompe nada.
-
 ---
 
-### Umbrales de decisión (en código)
+### Umbrales de decisión
 
 | Parámetro | Valor | Ubicación |
 |---|---|---|
-| Gate de tamaño mínimo de batch | 5% del histórico | `training_decision.py:MIN_BATCH_RATIO` (env: `MIN_BATCH_RATIO`) |
+| Gate de tamaño mínimo de batch | 5% del histórico | `training_decision.py:MIN_BATCH_RATIO` |
 | Umbral de incremento de volumen | 10% | `training_decision.py:VOLUME_INCREASE_THRESHOLD` |
 | Umbral de nueva categoría significativa | ≥ 1% frecuencia | `validation.py:detect_new_categories` |
 | Umbral de drift (p-value KS) | < 0.05 | `drift_detection.py:DRIFT_P_VALUE_THRESHOLD` |
 | Mínimo filas históricas para drift | 50 | `drift_detection.py:MIN_REFERENCE_ROWS` |
 | Score mínimo de calidad de datos | 0.5 | `validation.py:validate_data_quality` |
-| Tasa máxima de nulos por columna | 50% | `validation.py:VALID_RANGES` |
+| Tasa máxima de nulos por columna | 50% | `validation.py` |
 | Tamaño mínimo de batch | 10 registros | `validation.py:validate_data_quality` |

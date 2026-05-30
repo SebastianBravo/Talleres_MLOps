@@ -20,7 +20,7 @@ x-airflow-common:
     POSTGRES_DATASET_PORT: 5432
     POSTGRES_DATASET_USER: airflow
     POSTGRES_DATASET_PASSWORD: airflow
-    POSTGRES_DATASET_DATABASE: diabetic_data
+    POSTGRES_DATASET_DATABASE: real_estate_data
     # API_URL: http://api-data:80
     # API_GROUP_NUMBER: 7
     MINIO_ENDPOINT: http://minio:9000

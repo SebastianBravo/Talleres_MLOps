@@ -102,21 +102,41 @@ def create_batch_audit_table(connection, table_name="batch_audit"):
 
 
 def create_inference_logs_table(connection, table_name="inference_logs"):
-    """Creates the inference request audit log table."""
+    """Creates the inference request audit log table.
+
+    Schema must match exactly what app/database.py inserts, since the DAG
+    creates this table first and the API's CREATE TABLE IF NOT EXISTS is a no-op.
+    """
     query = f"""
     CREATE TABLE IF NOT EXISTS {table_name} (
-        id SERIAL PRIMARY KEY,
-        request_id UUID DEFAULT gen_random_uuid(),
-        requested_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        input_data JSONB NOT NULL,
-        prediction DOUBLE PRECISION,
-        model_name VARCHAR(128),
-        model_version VARCHAR(64),
-        model_alias VARCHAR(64),
-        response_time_ms DOUBLE PRECISION,
-        status VARCHAR(16) DEFAULT 'success',
-        error_message TEXT
+        request_id       UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
+        requested_at     TIMESTAMP NOT NULL,
+        input_data       JSONB     NOT NULL,
+        predicted_price  FLOAT     NOT NULL,
+        model_name       VARCHAR(128),
+        model_version    VARCHAR(32),
+        model_alias      VARCHAR(64),
+        response_time_ms FLOAT     NOT NULL
     )
     """
     execute_query(connection, query)
+    # Migration guard: rename old 'prediction' column if the table was created
+    # before the schema was aligned with the API.
+    execute_query(
+        connection,
+        f"""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = '{table_name}' AND column_name = 'prediction'
+            ) AND NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = '{table_name}' AND column_name = 'predicted_price'
+            ) THEN
+                ALTER TABLE {table_name} RENAME COLUMN prediction TO predicted_price;
+            END IF;
+        END $$;
+        """,
+    )
     print(f"Table {table_name} created/verified successfully")

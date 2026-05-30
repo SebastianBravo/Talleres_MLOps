@@ -1,0 +1,13 @@
+{
+  "bed": 3,
+  "bath": 2.0,
+  "acre_lot": 0.12,
+  "house_size": 1850.0,
+  "prev_sold_date": "2021-08-15",
+  "brokered_by": "Realty Group Inc",
+  "street": "123 Maple St",
+  "city": "Austin",
+  "state": "Texas",
+  "zip_code": "78701",
+  "status": "for_sale"
+}
