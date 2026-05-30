@@ -10,4 +10,9 @@ services:
       API_URL: http://api:8000
     depends_on:
       - api
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.25"
     restart: unless-stopped

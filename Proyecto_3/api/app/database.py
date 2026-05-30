@@ -43,6 +43,39 @@ def ensure_inference_logs_table():
         print(f"No se pudo crear inference_logs: {exc}")
 
 
+def get_batch_history():
+    """Reads all rows from batch_audit ordered by batch_id ASC.
+
+    Returns a list of dicts with datetime values serialized to ISO strings.
+    Raises on connection or query failure so the caller can return a proper HTTP error.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+            batch_id, run_id, fetched_at, records_received, records_stored,
+            should_train, training_reasons,
+            drift_detected, drift_details, new_categories_detected,
+            model_run_id, model_version,
+            model_promoted, promotion_reason,
+            candidate_mae, candidate_rmse,
+            production_mae, production_rmse,
+            execution_status, completed_at
+        FROM batch_audit
+        ORDER BY batch_id ASC
+    """)
+    columns = [desc[0] for desc in cur.description]
+    rows = []
+    for row in cur.fetchall():
+        record = {}
+        for col, val in zip(columns, row):
+            record[col] = val.isoformat() if hasattr(val, "isoformat") else val
+        rows.append(record)
+    cur.close()
+    conn.close()
+    return rows
+
+
 def log_inference(
     input_data: dict,
     predicted_price: float,

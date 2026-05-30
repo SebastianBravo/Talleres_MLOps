@@ -13,9 +13,10 @@ Este documento describe en detalle la API de inferencia del proyecto, sus endpoi
 5. [Schema de entrada — PropertyFeatures](#5-schema-de-entrada--propertyfeatures)
 6. [Carga del modelo](#6-carga-del-modelo)
 7. [Persistencia de inferencias](#7-persistencia-de-inferencias)
-8. [Integración con el DAG de Airflow](#8-integración-con-el-dag-de-airflow)
-9. [Variables de entorno](#9-variables-de-entorno)
-10. [Despliegue local con Docker Compose](#10-despliegue-local-con-docker-compose)
+8. [Historial de lotes](#8-historial-de-lotes)
+9. [Integración con el DAG de Airflow](#9-integración-con-el-dag-de-airflow)
+10. [Variables de entorno](#10-variables-de-entorno)
+11. [Despliegue local con Docker Compose](#11-despliegue-local-con-docker-compose)
 
 ---
 
@@ -45,16 +46,18 @@ Cliente HTTP
 │  GET  /              → info general     │
 │  GET  /health        → estado de la API │
 │  GET  /model-info    → versión cargada  │
+│  GET  /history       → historial lotes  │
 │  POST /predict       → predicción       │
 │  POST /reload        → recarga modelo   │
 │  GET  /metrics       → Prometheus       │
 └──────────┬──────────────────┬───────────┘
            │                  │
            ▼                  ▼
-    ┌─────────────┐    ┌──────────────────┐
-    │   MLflow    │    │   PostgreSQL      │
-    │  Registry   │    │  inference_logs   │
-    └─────────────┘    └──────────────────┘
+    ┌─────────────┐    ┌─────────────────────────┐
+    │   MLflow    │    │       PostgreSQL         │
+    │  Registry   │    │  inference_logs          │
+    └─────────────┘    │  batch_audit  (lectura)  │
+                       └─────────────────────────┘
            │
            ▼
     ┌─────────────┐
@@ -202,6 +205,52 @@ float (precio predicho)
      ├── Persiste en inference_logs (PostgreSQL)
      └── Retorna en respuesta JSON
 ```
+
+---
+
+### `GET /history`
+
+Devuelve el historial completo de procesamiento de lotes desde la tabla `batch_audit` de PostgreSQL. Este endpoint es consumido principalmente por la interfaz Streamlit para mostrar la evolución del pipeline de entrenamiento.
+
+**Respuesta exitosa (200):**
+```json
+{
+  "total": 4,
+  "batches": [
+    {
+      "batch_id": 1,
+      "fetched_at": "2026-05-27T10:00:00",
+      "records_received": 5000,
+      "records_stored": 5000,
+      "should_train": true,
+      "training_reasons": ["No production model exists — training baseline"],
+      "drift_detected": false,
+      "drift_details": {},
+      "new_categories_detected": {},
+      "model_run_id": "a1b2c3d4e5f6...",
+      "model_version": "1",
+      "model_promoted": true,
+      "promotion_reason": "No production model — first version promoted automatically",
+      "candidate_mae": 52340.0,
+      "candidate_rmse": 81200.0,
+      "production_mae": null,
+      "production_rmse": null,
+      "execution_status": "success",
+      "completed_at": "2026-05-27T10:08:45"
+    }
+  ]
+}
+```
+
+Los campos datetime se devuelven como strings ISO 8601. Los campos JSONB (`training_reasons`, `drift_details`, `new_categories_detected`) se devuelven como objetos JSON nativos.
+
+**Errores:**
+
+| Código | Causa |
+|---|---|
+| `503` | Error de conexión a PostgreSQL o tabla `batch_audit` no existe todavía |
+
+**Nota:** la tabla `batch_audit` es creada por el DAG de Airflow en su tarea `create_tables`. Antes de que el DAG corra por primera vez este endpoint devuelve 503.
 
 ---
 
@@ -376,7 +425,7 @@ El tiempo entre la promoción y la disponibilidad del nuevo modelo en la API es 
 
 ---
 
-## 7. Persistencia de inferencias
+## 7. Persistencia de inferencias — `inference_logs`
 
 Cada predicción exitosa se registra en la tabla `inference_logs` de PostgreSQL:
 
@@ -433,7 +482,69 @@ FROM inference_logs;
 
 ---
 
-## 8. Integración con el DAG de Airflow
+## 8. Historial de lotes — `batch_audit`
+
+El endpoint `GET /history` lee la tabla `batch_audit` que el DAG de Airflow mantiene. La API accede a esta tabla **en modo lectura únicamente** — todas las escrituras son responsabilidad exclusiva del DAG.
+
+### Schema de `batch_audit`
+
+```sql
+CREATE TABLE batch_audit (
+    id                      SERIAL PRIMARY KEY,
+    batch_id                INTEGER UNIQUE NOT NULL,
+    run_id                  VARCHAR(128),
+    fetched_at              TIMESTAMP,
+    records_received        INTEGER,
+    records_stored          INTEGER,
+    schema_valid            BOOLEAN,
+    schema_issues           TEXT,
+    quality_score           DOUBLE PRECISION,
+    quality_issues          JSONB,
+    new_categories_detected JSONB,
+    drift_detected          BOOLEAN,
+    drift_details           JSONB,
+    should_train            BOOLEAN,
+    training_reasons        JSONB,      -- lista de strings con motivos de la decisión
+    preprocessor_version    VARCHAR(256),
+    model_run_id            VARCHAR(128),
+    model_version           VARCHAR(64),
+    model_promoted          BOOLEAN,
+    promotion_reason        TEXT,
+    candidate_mae           DOUBLE PRECISION,
+    candidate_rmse          DOUBLE PRECISION,
+    production_mae          DOUBLE PRECISION,
+    production_rmse         DOUBLE PRECISION,
+    execution_status        VARCHAR(32),  -- running | success | failed | skipped_training
+    completed_at            TIMESTAMP
+);
+```
+
+### Consultas útiles
+
+```sql
+-- Tasa de entrenamiento por lote
+SELECT batch_id, should_train, execution_status, training_reasons
+FROM batch_audit
+ORDER BY batch_id;
+
+-- Comparativa de métricas por lote entrenado
+SELECT batch_id, model_version, candidate_mae, production_mae,
+       ROUND(((candidate_mae - production_mae) / production_mae * 100)::numeric, 2) AS mae_delta_pct,
+       model_promoted, promotion_reason
+FROM batch_audit
+WHERE should_train = true
+ORDER BY batch_id;
+
+-- Evolución del MAE productivo a lo largo del tiempo
+SELECT batch_id, model_version, candidate_mae
+FROM batch_audit
+WHERE model_promoted = true
+ORDER BY batch_id;
+```
+
+---
+
+## 9. Integración con el DAG de Airflow
 
 La API y el DAG se coordinan mediante el endpoint `/reload`.
 
@@ -493,7 +604,7 @@ La variable `INFERENCE_API_URL` en los workers de Airflow indica a `utils/infere
 
 ---
 
-## 9. Variables de entorno
+## 10. Variables de entorno
 
 | Variable | Default | Descripción |
 |---|---|---|
@@ -512,7 +623,7 @@ La variable `INFERENCE_API_URL` en los workers de Airflow indica a `utils/infere
 
 ---
 
-## 10. Despliegue local con Docker Compose
+## 11. Despliegue local con Docker Compose
 
 ### Dockerfile
 
@@ -557,6 +668,9 @@ curl http://localhost:8000/model-info
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
   -d @request_example.json
+
+# Historial de lotes procesados por el DAG
+curl http://localhost:8000/history
 
 # Recarga manual del modelo (normalmente lo hace el DAG)
 curl -X POST http://localhost:8000/reload

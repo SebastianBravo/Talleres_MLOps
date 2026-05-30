@@ -3,7 +3,7 @@ import time
 from fastapi import APIRouter, HTTPException
 
 from . import model as ml
-from .database import log_inference
+from .database import get_batch_history, log_inference
 from .schemas import PropertyFeatures
 
 router = APIRouter()
@@ -79,6 +79,23 @@ def predict(features: PropertyFeatures):
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/history")
+def batch_history():
+    """Returns the full batch processing history from the batch_audit table.
+
+    Includes per-batch training decision, promotion outcome, performance metrics,
+    and MLflow identifiers. Returns 503 if the audit table is not yet available.
+    """
+    try:
+        batches = get_batch_history()
+        return {"batches": batches, "total": len(batches)}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"message": "No se pudo obtener el historial de lotes.", "error": str(exc)},
+        )
 
 
 @router.post("/reload")
