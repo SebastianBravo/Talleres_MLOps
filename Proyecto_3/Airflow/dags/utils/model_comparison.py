@@ -115,24 +115,19 @@ def compare_with_production(candidate_run_id, registered_model_name):
     }
 
 
-def promote_to_production(candidate_run_id, registered_model_name):
+def promote_to_production(model_version, registered_model_name):
     """
-    Registers a new model version from the candidate run and sets
-    the 'production' alias on it.  Returns the new version number.
+    Sets the 'production' alias on an already-registered model version.
+    The version must already exist in the registry (created by register_candidate).
+    Returns the version number.
     """
     mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
     client = mlflow.MlflowClient()
 
-    model_uri = f"runs:/{candidate_run_id}/model"
-    version = client.create_model_version(
-        name=registered_model_name,
-        source=model_uri,
-        run_id=candidate_run_id,
-    )
     client.set_registered_model_alias(
-        registered_model_name, "production", version.version
+        registered_model_name, "production", model_version
     )
     logger.info(
-        "Promoted %s v%s to production alias", registered_model_name, version.version
+        "Promoted %s v%s to production alias", registered_model_name, model_version
     )
-    return version.version
+    return model_version

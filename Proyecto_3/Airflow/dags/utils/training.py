@@ -2,8 +2,6 @@ import json
 import logging
 import os
 import tempfile
-from datetime import datetime
-
 import mlflow
 import mlflow.sklearn
 import numpy as np
@@ -24,12 +22,17 @@ REGISTERED_MODEL_NAME = os.environ.get(
 EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT", "real-estate-price")
 MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "real-estate-project")
 
+# PARAM_GRID = {
+#     "n_estimators": [100, 200],
+#     "max_depth": [None, 15],
+#     "random_state": [42],
+# }
+
 PARAM_GRID = {
-    "n_estimators": [100, 200],
-    "max_depth": [None, 15],
+    "n_estimators": [100],
+    "max_depth": [15],
     "random_state": [42],
 }
-
 
 def _compute_metrics(y_true, y_pred):
     """Returns MAE, RMSE, R² and MAPE as a flat dict."""
@@ -107,8 +110,7 @@ def train_candidate(
     mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
     client = mlflow.MlflowClient()
 
-    experiment_full = f"{experiment_name}_{datetime.utcnow().strftime('%Y%m%d')}"
-    _setup_experiment(client, experiment_full)
+    _setup_experiment(client, experiment_name)
 
     # Ensure model registry entry exists
     try:

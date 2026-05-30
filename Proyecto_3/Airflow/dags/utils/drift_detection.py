@@ -10,10 +10,11 @@ DRIFT_P_VALUE_THRESHOLD = 0.05
 MIN_REFERENCE_ROWS = 50
 
 
-def detect_drift(records, connection, raw_table="property_raw"):
+def detect_drift(records, connection, raw_table="property_raw", batch_id=None):
     """
     Applies a two-sample Kolmogorov-Smirnov test on each key numeric column,
-    comparing the new batch distribution against all previously stored data.
+    comparing the new batch distribution against previously stored batches only
+    (batch_id < current batch_id).
 
     Returns a dict with 'drift_detected' (bool), 'drifted_columns' and
     per-column KS statistics under 'details'.
@@ -28,12 +29,19 @@ def detect_drift(records, connection, raw_table="property_raw"):
 
     new_df = pd.DataFrame(records)
 
-    # Load historical data (batches prior to the current one)
+    # Load only historical data — exclude the current batch to avoid self-comparison
     try:
         cols_csv = ", ".join(KEY_NUMERIC_COLS)
-        ref_df = pd.read_sql_query(
-            f"SELECT {cols_csv} FROM {raw_table}", connection
-        )
+        if batch_id is not None:
+            ref_df = pd.read_sql_query(
+                f"SELECT {cols_csv} FROM {raw_table} WHERE batch_id < %s",
+                connection,
+                params=(batch_id,),
+            )
+        else:
+            ref_df = pd.read_sql_query(
+                f"SELECT {cols_csv} FROM {raw_table}", connection
+            )
     except Exception as exc:
         logger.warning("Could not load reference data for drift detection: %s", exc)
         return {

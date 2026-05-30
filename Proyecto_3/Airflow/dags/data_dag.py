@@ -170,7 +170,7 @@ def _detect_new_categories(**context):
 
     conn = connect_to_db()
     try:
-        result = detect_new_categories(records, conn, RAW_TABLE)
+        result = detect_new_categories(records, conn, RAW_TABLE, batch_id)
         update_batch_audit(
             conn, AUDIT_TABLE, batch_id,
             new_categories_detected=result["new_categories"],
@@ -200,7 +200,7 @@ def _detect_data_drift(**context):
 
     conn = connect_to_db()
     try:
-        result = detect_drift(records, conn, RAW_TABLE)
+        result = detect_drift(records, conn, RAW_TABLE, batch_id)
         update_batch_audit(
             conn, AUDIT_TABLE, batch_id,
             drift_detected=result["drift_detected"],
@@ -461,20 +461,19 @@ def _decide_promotion(**context):
 
 
 def _promote_model(**context):
-    """Sets the production alias on the candidate version in MLflow."""
+    """Sets the production alias on the already-registered candidate version in MLflow."""
     from utils.db_connection import close_db_connection, connect_to_db
     from utils.ingestion import update_batch_audit
     from utils.model_comparison import promote_to_production
 
     ti = context["ti"]
     batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
-    train_result = ti.xcom_pull(task_ids="train_candidate_model", key="train_result") or {}
-    run_id = train_result.get("best_run_id")
+    model_version = ti.xcom_pull(task_ids="register_candidate_in_mlflow", key="model_version")
     comparison = (
         ti.xcom_pull(task_ids="compare_with_production", key="comparison_result") or {}
     )
 
-    promoted_version = promote_to_production(run_id, REGISTERED_MODEL_NAME)
+    promoted_version = promote_to_production(model_version, REGISTERED_MODEL_NAME)
 
     conn = connect_to_db()
     try:
@@ -543,11 +542,42 @@ def _notify_or_log_result(**context):
 # DAG definition
 # ---------------------------------------------------------------------------
 
+
+def _on_task_failure(context):
+    """
+    Marks the batch as failed in the audit table after all retries are exhausted.
+    Runs as on_failure_callback on every task in the DAG.
+    """
+    from datetime import datetime as _dt
+
+    from utils.db_connection import close_db_connection, connect_to_db
+    from utils.ingestion import update_batch_audit
+
+    ti = context["ti"]
+    try:
+        batch_id = ti.xcom_pull(task_ids="fetch_batch_from_api", key="batch_id")
+        if batch_id is None:
+            # Failed before fetch_batch_from_api pushed batch_id — nothing to update.
+            return
+        conn = connect_to_db()
+        try:
+            update_batch_audit(
+                conn, AUDIT_TABLE, batch_id,
+                execution_status="failed",
+                completed_at=_dt.utcnow(),
+            )
+        finally:
+            close_db_connection(conn)
+    except Exception as exc:
+        print(f"on_failure_callback could not update audit for task {ti.task_id}: {exc}")
+
+
 default_args = {
     "owner": "airflow",
     "retries": 2,
     "retry_delay": timedelta(minutes=2),
     "retry_exponential_backoff": False,
+    "on_failure_callback": _on_task_failure,
 }
 
 with DAG(

@@ -108,9 +108,10 @@ def validate_data_quality(records):
     }
 
 
-def detect_new_categories(records, connection, raw_table="property_raw"):
+def detect_new_categories(records, connection, raw_table="property_raw", batch_id=None):
     """
-    Compares categorical values in the new batch against the historical data.
+    Compares categorical values in the new batch against historical data
+    from previous batches only (batch_id < current batch_id).
 
     A new category is considered significant when its frequency in the batch
     is >= 1 %.  Returns a dict with 'new_categories' and 'significant_new'.
@@ -127,9 +128,16 @@ def detect_new_categories(records, connection, raw_table="property_raw"):
 
         try:
             cursor = connection.cursor()
-            cursor.execute(
-                f"SELECT DISTINCT {col} FROM {raw_table} WHERE {col} IS NOT NULL"
-            )
+            if batch_id is not None:
+                cursor.execute(
+                    f"SELECT DISTINCT {col} FROM {raw_table} "
+                    f"WHERE {col} IS NOT NULL AND batch_id < %s",
+                    (batch_id,),
+                )
+            else:
+                cursor.execute(
+                    f"SELECT DISTINCT {col} FROM {raw_table} WHERE {col} IS NOT NULL"
+                )
             historical_values = {str(row[0]) for row in cursor.fetchall()}
             cursor.close()
         except Exception as exc:
