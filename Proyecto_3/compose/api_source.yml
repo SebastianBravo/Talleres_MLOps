@@ -7,4 +7,9 @@ services:
     container_name: SourceAPI
     ports:
       - "8001:80"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.25"
     restart: always

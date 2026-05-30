@@ -26,9 +26,9 @@ include:
   - compose/mlflow.yml
   - compose/api_source.yml
   - compose/api.yml
-  # - compose/prometheus.yml
-  # - compose/grafana.yml
+  - compose/prometheus.yml
+  - compose/grafana.yml
   # - compose/streamlit.yml
-  # - compose/locust.yml
+  - compose/locust.yml
   # - compose/jupyterlab.yml
   # - compose/inference_api.yml

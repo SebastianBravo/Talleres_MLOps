@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: default
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      # /etc/grafana/dashboards is baked into the image and does not conflict
+      # with the runtime data volume mounted at /var/lib/grafana.
+      path: /etc/grafana/dashboards

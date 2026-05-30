@@ -8,4 +8,9 @@ services:
       - "8089:8089"
     depends_on:
       - api
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.25"
     restart: unless-stopped

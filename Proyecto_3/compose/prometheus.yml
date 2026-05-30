@@ -1,16 +1,22 @@
 services:
   prometheus:
-    image: prom/prometheus:v3.4.0
+    build:
+      context: ../prometheus
+      dockerfile: Dockerfile
     container_name: Prometheus
     ports:
       - "9090:9090"
     volumes:
-      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=7d"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.25"
     restart: unless-stopped
 
 volumes:

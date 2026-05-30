@@ -1,6 +1,8 @@
 services:
   grafana:
-    image: grafana/grafana:12.0.1
+    build:
+      context: ../grafana
+      dockerfile: Dockerfile
     container_name: Grafana
     ports:
       - "3000:3000"
@@ -8,12 +10,16 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
     volumes:
       - grafana-data:/var/lib/grafana
-      - ../grafana/provisioning:/etc/grafana/provisioning:ro
-      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.15"
     restart: unless-stopped
 
 volumes:
