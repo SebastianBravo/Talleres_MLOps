@@ -45,14 +45,24 @@ def fetch_batch_from_api():
 
     try:
         response = session.get(url, timeout=30)
-        response.raise_for_status()
     except requests.exceptions.RequestException as exc:
         raise RuntimeError(f"API request failed: {exc}") from exc
 
-    data = response.json()
+    # For any non-2xx response, check the body for a "detail" key first.
+    # The API signals exhausted batches with 400 + {"detail": "..."}, so we
+    # must read the body before raise_for_status() discards it.
+    if not response.ok:
+        try:
+            body = response.json()
+            if isinstance(body, dict) and "detail" in body:
+                raise BatchExhaustedError(body["detail"])
+        except (ValueError, KeyError):
+            pass
+        raise RuntimeError(
+            f"API request failed: HTTP {response.status_code} for {url}"
+        )
 
-    if isinstance(data, dict) and "detail" in data:
-        raise BatchExhaustedError(data["detail"])
+    data = response.json()
 
     if not isinstance(data, dict) or "data" not in data:
         raise RuntimeError(f"Unexpected API response shape: {type(data)}")

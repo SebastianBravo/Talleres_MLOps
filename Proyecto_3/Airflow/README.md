@@ -587,17 +587,66 @@ Punto de cierre visual del DAG. Mismo trigger rule que `notify_or_log_result` pa
 
 ## 4. Lógica de decisión — Entrenamiento
 
-La función `should_train()` en `utils/training_decision.py` evalúa cuatro criterios. **Cualquiera** de ellos es suficiente para disparar el entrenamiento.
+La función `should_train()` en `utils/training_decision.py` sigue el siguiente orden de evaluación:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Criterio 1: ¿existe modelo productivo?                 │
+│  NO → marcar trigger=True, continuar al gate            │
+│  SÍ → continuar al gate                                 │
+└────────────────────────┬────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│  Gate: ¿batch >= MIN_BATCH_RATIO del histórico?         │
+│  NO → retornar (trigger actual, razón del bloqueo)      │
+│       Los criterios 2-4 no se evalúan.                  │
+│  SÍ → continuar a criterios 2-4                         │
+└────────────────────────┬────────────────────────────────┘
+                         ▼
+              Criterios 2, 3 y 4 (cualquiera
+              es suficiente para trigger=True)
+```
 
 ### Criterio 1 — Sin modelo productivo
 
 ```python
 if not _production_model_exists(registered_model_name):
     trigger = True
-    reasons.append("No production model exists — training baseline")
 ```
 
-Si no existe ninguna versión con el alias `production` en MLflow, el sistema siempre entrena para establecer la línea base. Esto ocurre obligatoriamente en el primer batch procesado.
+Se evalúa **antes del gate**. Si no existe ninguna versión con el alias `production` en MLflow, el sistema siempre entrena para establecer la línea base, sin importar el tamaño del batch. Esto ocurre obligatoriamente en el primer batch procesado.
+
+---
+
+### Gate — Tamaño mínimo del batch
+
+```python
+MIN_BATCH_RATIO = 0.05  # configurable via MIN_BATCH_RATIO env var
+
+ratio = new_batch_count / historical_count
+if ratio < MIN_BATCH_RATIO:
+    # bloquear criterios 2-4, no entrenar
+```
+
+**Por qué existe este gate:**
+
+El test de Kolmogorov-Smirnov (criterio 4) tiene una propiedad problemática: su potencia estadística crece con el tamaño de la muestra de referencia. Con 400.000 registros históricos, diferencias de distribución del orden de 0.1% en `house_size` producen p < 0.05, disparando el reentrenamiento por un cambio que no tiene ningún impacto práctico en el modelo.
+
+Sin este gate, un batch de 4.000 registros sobre 400.000 acumulados (1% del histórico) puede activar drift, nuevas categorías o volumen, forzando un reentrenamiento costoso que con seguridad producirá un modelo prácticamente idéntico al actual.
+
+**Comportamiento:**
+
+| Histórico | Nuevo batch | Ratio | ¿Gate pasa? |
+|---|---|---|---|
+| 0 | 5.000 | — | ✅ Siempre (primer batch) |
+| 10.000 | 600 | 6% | ✅ ≥ 5% |
+| 10.000 | 400 | 4% | ❌ < 5% |
+| 400.000 | 4.000 | 1% | ❌ < 5% |
+| 400.000 | 22.000 | 5.5% | ✅ ≥ 5% |
+
+Cuando el gate bloquea, la razón queda registrada en `batch_audit.training_reasons` con el ratio exacto y el umbral requerido. El criterio 1 (sin modelo productivo) **siempre** puede forzar entrenamiento aunque el gate falle.
+
+---
 
 ### Criterio 2 — Incremento de volumen
 
@@ -607,12 +656,13 @@ if ratio >= 0.10:  # umbral: 10%
     trigger = True
 ```
 
-El lote actual divide el volumen acumulado de batches anteriores. Si el lote representa al menos el 10% del histórico, el sistema considera que hay suficiente información nueva para que un modelo re-entrenado sea significativamente diferente.
+Si el lote representa al menos el 10% del histórico, hay suficiente información nueva para que el reentrenamiento sea significativo. Este criterio solo se evalúa si el gate pasó (ratio ≥ 5%), de modo que en la práctica el umbral efectivo de volumen es 10%.
 
 **Ejemplo:**
 - Histórico: 10.000 registros
-- Lote actual: 1.200 registros → ratio = 12% → **dispara**
-- Lote actual: 800 registros → ratio = 8% → **no dispara**
+- Lote actual: 1.200 → ratio 12% → gate pasa (≥5%) y volumen dispara (≥10%) ✅
+- Lote actual: 600 → ratio 6% → gate pasa (≥5%) pero volumen no dispara (6% < 10%)
+- Lote actual: 400 → ratio 4% → gate bloquea, volumen no se evalúa ❌
 
 ### Criterio 3 — Nuevas categorías significativas
 
@@ -623,6 +673,8 @@ if new_categories_result.get("significant_new", False):
 
 Si `detect_new_categories` encontró categorías ausentes en el histórico con frecuencia ≥ 1% en el lote actual, el OrdinalEncoder debe re-aprender el espacio categórico para representarlas correctamente (en lugar de asignarles -1 indefinidamente).
 
+Solo se evalúa si el gate pasó. Si el batch es pequeño, la presencia de nuevas categorías tampoco justifica reentrenamiento — el modelo las codificará como -1 con impacto mínimo hasta que llegue suficiente volumen.
+
 ### Criterio 4 — Drift de distribución
 
 ```python
@@ -630,11 +682,11 @@ if drift_result.get("drift_detected", False):
     trigger = True
 ```
 
-Si el test KS detectó que alguna variable numérica clave (`price`, `house_size`, `bed`, `bath`, `acre_lot`) cambió significativamente de distribución (p < 0.05), los datos nuevos provienen de una distribución diferente y el modelo actual podría estar desalineado.
+Si el test KS detectó que alguna variable numérica clave (`price`, `house_size`, `bed`, `bath`, `acre_lot`) cambió significativamente de distribución (p < 0.05). Solo se evalúa si el gate pasó, evitando falsos positivos estadísticos cuando el dataset histórico es muy grande.
 
 ### Registro de decisión
 
-Independientemente del resultado, `batch_audit.should_train` y `batch_audit.training_reasons` registran la decisión con su justificación técnica completa. Esta información es visible desde Streamlit.
+Independientemente del resultado, `batch_audit.should_train` y `batch_audit.training_reasons` registran la decisión con su justificación técnica completa, incluyendo el bloqueo del gate cuando aplica. Esta información es visible desde Streamlit.
 
 ---
 
@@ -892,6 +944,7 @@ El campo `row_hash` en `property_raw` permite detectar registros exactamente id�
 | `DB_PASSWORD` | — | Contraseña PostgreSQL |
 | `PROMOTION_MAE_IMPROVEMENT` | `0.03` | Mejora mínima de MAE para promover (fracción) |
 | `PROMOTION_RMSE_TOLERANCE` | `0.01` | Tolerancia máxima de empeoramiento de RMSE |
+| `MIN_BATCH_RATIO` | `0.05` | Fracción mínima que debe representar el batch sobre el histórico para evaluar criterios de entrenamiento. Ver sección 4 (Gate). |
 | `GIT_COMMIT` | — | SHA del commit que originó la imagen. Ver abajo. |
 | `GIT_PYTHON_REFRESH` | `quiet` | Suprime el warning de GitPython cuando git no está en el PATH del contenedor |
 
@@ -971,6 +1024,7 @@ Así, si `GIT_COMMIT` no está definida en el shell, el valor fallback es `"loca
 
 | Parámetro | Valor | Ubicación |
 |---|---|---|
+| Gate de tamaño mínimo de batch | 5% del histórico | `training_decision.py:MIN_BATCH_RATIO` (env: `MIN_BATCH_RATIO`) |
 | Umbral de incremento de volumen | 10% | `training_decision.py:VOLUME_INCREASE_THRESHOLD` |
 | Umbral de nueva categoría significativa | ≥ 1% frecuencia | `validation.py:detect_new_categories` |
 | Umbral de drift (p-value KS) | < 0.05 | `drift_detection.py:DRIFT_P_VALUE_THRESHOLD` |
