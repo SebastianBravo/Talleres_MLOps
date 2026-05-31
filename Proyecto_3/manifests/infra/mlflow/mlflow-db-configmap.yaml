@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mlflow-db-config
+  namespace: mlops-infra
+data:
+  POSTGRES_DB: "mlflow"

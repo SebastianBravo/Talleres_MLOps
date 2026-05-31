@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: mlops-infra
+  labels:
+    app: mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      containers:
+        - name: mlflow
+          image: bravosjs/mlops-mlflow:dev
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+          envFrom:
+            - configMapRef:
+                name: mlflow-config
+            - secretRef:
+                name: mlflow-secret
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "16Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+      restartPolicy: Always

@@ -1,0 +1,60 @@
+executor: LocalExecutor
+airflowVersion: "2.11.1"
+
+images:
+  airflow:
+    repository: bravosjs/mlops-airflow
+    tag: dev
+    pullPolicy: Always
+
+env:
+  - name: AIRFLOW__CORE__LOAD_EXAMPLES
+    value: "False"
+  - name: POSTGRES_DATASET_HOST
+    value: postgres-dataset.mlops-infra.svc.cluster.local
+  - name: POSTGRES_DATASET_PORT
+    value: "5432"
+  - name: POSTGRES_DATASET_USER
+    value: airflow
+  - name: POSTGRES_DATASET_PASSWORD
+    value: airflow
+  - name: POSTGRES_DATASET_DATABASE
+    value: real_estate_data
+  - name: AWS_ACCESS_KEY_ID
+    value: minioadmin
+  - name: AWS_SECRET_ACCESS_KEY
+    value: minioadmin
+  - name: AWS_DEFAULT_REGION
+    value: us-east-1
+  - name: MINIO_ENDPOINT
+    value: http://minio.mlops-infra.svc.cluster.local:9000
+  - name: MINIO_BUCKET
+    value: real-estate-project
+  - name: MLFLOW_S3_ENDPOINT_URL
+    value: http://minio.mlops-infra.svc.cluster.local:9000
+  - name: MLFLOW_TRACKING_URI
+    value: http://mlflow.mlops-infra.svc.cluster.local:5000
+  - name: MLFLOW_REGISTERED_MODEL
+    value: real-estate-price-model
+  - name: MLFLOW_EXPERIMENT
+    value: real-estate-price
+  - name: DATA_API_URL
+    value: http://api-source.mlops-infra.svc.cluster.local:80
+  - name: DATA_API_GROUP
+    value: "7"
+  - name: INFERENCE_API_URL
+    value: http://api.mlops-app.svc.cluster.local:8000
+  - name: GIT_PYTHON_REFRESH
+    value: quiet
+
+workers:
+  replicas: 1
+
+triggerer:
+  enabled: true
+
+postgresql:
+  enabled: true
+
+redis:
+  enabled: false

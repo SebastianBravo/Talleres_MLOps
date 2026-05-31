@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+  namespace: mlops-app
+data:
+  MLFLOW_TRACKING_URI: "http://mlflow.mlops-infra.svc.cluster.local:5000"
+  MLFLOW_S3_ENDPOINT_URL: "http://minio.mlops-infra.svc.cluster.local:9000"
+  REGISTERED_MODEL_NAME: "real-estate-price-model"
+  MODEL_ALIAS: "production"
+  POSTGRES_DATASET_HOST: "postgres-dataset.mlops-infra.svc.cluster.local"
+  POSTGRES_DATASET_PORT: "5432"
+  POSTGRES_DATASET_DATABASE: "real_estate_data"
+  MLFLOW_HTTP_REQUEST_TIMEOUT: "15"

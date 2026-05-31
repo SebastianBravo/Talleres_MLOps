@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-dataset-config
+  namespace: mlops-infra
+data:
+  POSTGRES_DB: "real_estate_data"

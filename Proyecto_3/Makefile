@@ -1,0 +1,164 @@
+REGISTRY  = bravosjs
+TAG       = dev
+MANIFESTS = manifests
+
+NS_INFRA   = mlops-infra
+NS_APP     = mlops-app
+NS_OBS     = mlops-obs
+NS_AIRFLOW = mlops-airflow
+
+# ─────────────────────────────────────────────
+# KUBERNETES — namespaces
+# ─────────────────────────────────────────────
+
+namespaces:
+	kubectl apply -f $(MANIFESTS)/namespaces/
+
+# ─────────────────────────────────────────────
+# KUBERNETES — despliegue por capas
+# ─────────────────────────────────────────────
+
+deploy-infra: namespaces
+	kubectl apply -f $(MANIFESTS)/infra/postgres-dataset/ -n $(NS_INFRA)
+	kubectl apply -f $(MANIFESTS)/infra/minio/            -n $(NS_INFRA)
+	kubectl apply -f $(MANIFESTS)/infra/mlflow/           -n $(NS_INFRA)
+	kubectl apply -f $(MANIFESTS)/infra/api-source/       -n $(NS_INFRA)
+
+wait-infra:
+	kubectl wait --for=condition=ready pod -l app=postgres-dataset -n $(NS_INFRA) --timeout=300s
+	kubectl wait --for=condition=ready pod -l app=minio            -n $(NS_INFRA) --timeout=300s
+	kubectl wait --for=condition=ready pod -l app=mlflow-db        -n $(NS_INFRA) --timeout=300s
+	kubectl wait --for=condition=ready pod -l app=mlflow           -n $(NS_INFRA) --timeout=300s
+	kubectl wait --for=condition=ready pod -l app=api-source       -n $(NS_INFRA) --timeout=120s
+
+minio-init:
+	kubectl delete pod minio-init -n $(NS_INFRA) --ignore-not-found
+	kubectl apply  -f $(MANIFESTS)/infra/minio-init-pod.yaml -n $(NS_INFRA)
+	kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/minio-init -n $(NS_INFRA) --timeout=120s
+
+deploy-app:
+	kubectl apply -f $(MANIFESTS)/app/api/       -n $(NS_APP)
+	kubectl apply -f $(MANIFESTS)/app/streamlit/ -n $(NS_APP)
+
+deploy-obs:
+	kubectl apply -f $(MANIFESTS)/obs/prometheus/ -n $(NS_OBS)
+	kubectl apply -f $(MANIFESTS)/obs/grafana/    -n $(NS_OBS)
+	kubectl apply -f $(MANIFESTS)/obs/locust/     -n $(NS_OBS)
+
+airflow-migrate:
+	kubectl delete pod airflow-migrate -n $(NS_AIRFLOW) --ignore-not-found
+	@echo "Esperando secret airflow-metadata..."
+	@until kubectl get secret airflow-metadata -n $(NS_AIRFLOW) > /dev/null 2>&1; do \
+		echo "  ..."; sleep 3; \
+	done
+	kubectl run airflow-migrate \
+		--image=bravosjs/mlops-airflow:dev \
+		--restart=Never \
+		--namespace=$(NS_AIRFLOW) \
+		--env="AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=$$(kubectl get secret airflow-metadata -n $(NS_AIRFLOW) -o jsonpath='{.data.connection}' | base64 -d)" \
+		-- airflow db migrate
+	kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
+		pod/airflow-migrate -n $(NS_AIRFLOW) --timeout=180s
+	@echo "Migraciones de Airflow aplicadas."
+
+deploy-airflow:
+	@which helm > /dev/null 2>&1 || brew install helm
+	helm repo add apache-airflow https://airflow.apache.org --force-update
+	helm repo update
+	helm upgrade --install airflow apache-airflow/airflow \
+		--namespace $(NS_AIRFLOW) \
+		--create-namespace \
+		-f $(MANIFESTS)/airflow-helm-values/values-local.yaml \
+		--timeout 5m
+	@echo "Esperando PostgreSQL de Airflow..."
+	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=postgresql \
+		-n $(NS_AIRFLOW) --timeout=120s
+	$(MAKE) airflow-migrate
+
+# Herramientas opcionales (no forman parte del pipeline principal)
+deploy-adminer:
+	kubectl apply -f $(MANIFESTS)/infra/adminer/ -n $(NS_INFRA)
+
+# Despliega todo en orden
+deploy: namespaces deploy-infra wait-infra minio-init deploy-app deploy-obs deploy-airflow
+
+# ─────────────────────────────────────────────
+# KUBERNETES — acceso local (port-forward)
+# ─────────────────────────────────────────────
+
+forward:
+	kubectl port-forward svc/airflow-webserver 8080:8080 -n $(NS_AIRFLOW) &
+	kubectl port-forward svc/mlflow            5000:5000 -n $(NS_INFRA)   &
+	kubectl port-forward svc/api               8000:8000 -n $(NS_APP)     &
+	kubectl port-forward svc/streamlit         8501:8501 -n $(NS_APP)     &
+	kubectl port-forward svc/locust            8089:8089 -n $(NS_OBS)     &
+	kubectl port-forward svc/prometheus        9090:9090 -n $(NS_OBS)     &
+	kubectl port-forward svc/grafana           3000:3000 -n $(NS_OBS)     &
+	kubectl port-forward svc/postgres-dataset  5432:5432 -n $(NS_INFRA)   &
+	kubectl port-forward svc/mlflow-db         5433:5432 -n $(NS_INFRA)   &
+	kubectl port-forward svc/minio             9001:9001 -n $(NS_INFRA)   &
+	kubectl port-forward svc/api-source        8001:80   -n $(NS_INFRA)   &
+	@echo ""
+	@echo "Servicios disponibles:"
+	@echo "  Airflow          → http://localhost:8080  (airflow / airflow)"
+	@echo "  MLflow           → http://localhost:5000"
+	@echo "  API              → http://localhost:8000/docs"
+	@echo "  Streamlit        → http://localhost:8501"
+	@echo "  Locust           → http://localhost:8089"
+	@echo "  Prometheus       → http://localhost:9090"
+	@echo "  Grafana          → http://localhost:3000  (admin / admin)"
+	@echo "  DB dataset       → localhost:5432  (airflow / airflow → real_estate_data)"
+	@echo "  DB MLflow        → localhost:5433  (mlflow / mlflow   → mlflow)"
+	@echo "  MinIO UI         → http://localhost:9001  (minioadmin / minioadmin)"
+	@echo "  Source API       → http://localhost:8001"
+
+forward-adminer:
+	kubectl port-forward svc/adminer 8082:8080 -n $(NS_INFRA) &
+	@echo "  Adminer          → http://localhost:8082"
+
+stop-forward:
+	pkill -f "kubectl port-forward" || true
+
+# ─────────────────────────────────────────────
+# KUBERNETES — estado y diagnóstico
+# ─────────────────────────────────────────────
+
+status:
+	@echo "\n── $(NS_INFRA) ──────────────────────────────────"
+	kubectl get pods,svc -n $(NS_INFRA)
+	@echo "\n── $(NS_APP) ────────────────────────────────────"
+	kubectl get pods,svc -n $(NS_APP)
+	@echo "\n── $(NS_OBS) ───────────────────────────────────"
+	kubectl get pods,svc -n $(NS_OBS)
+	@echo "\n── $(NS_AIRFLOW) ────────────────────────────────"
+	kubectl get pods,svc -n $(NS_AIRFLOW)
+
+restart-api:
+	kubectl rollout restart deployment/api -n $(NS_APP)
+	kubectl rollout status  deployment/api -n $(NS_APP)
+
+restart-airflow:
+	kubectl rollout restart deployment/airflow-scheduler  -n $(NS_AIRFLOW)
+	kubectl rollout restart deployment/airflow-webserver  -n $(NS_AIRFLOW)
+
+# ─────────────────────────────────────────────
+# KUBERNETES — limpieza
+# ─────────────────────────────────────────────
+
+delete-app:
+	kubectl delete namespace $(NS_APP)     --ignore-not-found
+	kubectl delete namespace $(NS_OBS)     --ignore-not-found
+	kubectl delete namespace $(NS_AIRFLOW) --ignore-not-found
+
+delete:
+	kubectl delete namespace $(NS_INFRA)   --ignore-not-found
+	kubectl delete namespace $(NS_APP)     --ignore-not-found
+	kubectl delete namespace $(NS_OBS)     --ignore-not-found
+	kubectl delete namespace $(NS_AIRFLOW) --ignore-not-found
+
+.PHONY: namespaces \
+        deploy-infra wait-infra minio-init deploy-app deploy-obs deploy-airflow airflow-migrate deploy \
+        deploy-adminer \
+        forward forward-adminer stop-forward \
+        status restart-api restart-airflow \
+        delete-app delete

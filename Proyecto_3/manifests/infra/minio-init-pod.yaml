@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: minio-init
+  namespace: mlops-infra
+  labels:
+    app: minio-init
+spec:
+  containers:
+    - name: minio-init
+      image: minio/mc:latest
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: MINIO_ROOT_USER
+          valueFrom:
+            secretKeyRef:
+              name: minio-secret
+              key: MINIO_ROOT_USER
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: minio-secret
+              key: MINIO_ROOT_PASSWORD
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Waiting for MinIO...";
+
+          until mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do
+            echo "MinIO not ready yet...";
+            sleep 2;
+          done;
+
+          echo "MinIO ready";
+
+          mc mb -p local/mlflows3;
+          mc anonymous set none local/mlflows3;
+          mc mb -p local/real-estate-project;
+  restartPolicy: Never

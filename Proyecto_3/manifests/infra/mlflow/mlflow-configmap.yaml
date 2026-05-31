@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mlflow-config
+  namespace: mlops-infra
+data:
+  MLFLOW_S3_ENDPOINT_URL: "http://minio:9000"
+  MLFLOW_DB_HOST: "mlflow-db"
+  MLFLOW_DB_PORT: "5432"
+  MLFLOW_DB_NAME: "mlflow"

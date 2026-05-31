@@ -1,0 +1,57 @@
+# Adminer — interfaz web opcional para administrar las bases de datos PostgreSQL.
+# Desplegar con: kubectl apply -f manifests/infra/adminer/ -n mlops-infra
+# Acceder con:   kubectl port-forward svc/adminer 8082:8080 -n mlops-infra
+#
+# Conexiones disponibles desde Adminer:
+#   postgres-dataset → host: postgres-dataset  user: airflow  pass: airflow  db: real_estate_data
+#   mlflow-db        → host: mlflow-db          user: mlflow   pass: mlflow   db: mlflow
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adminer
+  namespace: mlops-infra
+  labels:
+    app: adminer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: adminer
+  template:
+    metadata:
+      labels:
+        app: adminer
+    spec:
+      containers:
+        - name: adminer
+          image: adminer:4.8.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ADMINER_DEFAULT_SERVER
+              value: postgres-dataset
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+      restartPolicy: Always
