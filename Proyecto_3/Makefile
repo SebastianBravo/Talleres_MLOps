@@ -89,9 +89,11 @@ deploy-kubectl: namespaces deploy-infra wait-infra minio-init deploy-app deploy-
 ARGOCD_NS = argocd
 
 # Instala Argo CD en el clúster (paso de bootstrap, una sola vez).
+# Se usa --server-side porque el CRD applicationsets.argoproj.io es demasiado
+# grande para el apply client-side (la anotacion last-applied supera 256 KB).
 argocd-install:
 	kubectl create namespace $(ARGOCD_NS) --dry-run=client -o yaml | kubectl apply -f -
-	kubectl apply -n $(ARGOCD_NS) -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+	kubectl apply --server-side --force-conflicts -n $(ARGOCD_NS) -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 	@echo "Esperando a que Argo CD este listo..."
 	kubectl wait --for=condition=available deployment/argocd-server -n $(ARGOCD_NS) --timeout=300s
 	@echo "Argo CD instalado."
