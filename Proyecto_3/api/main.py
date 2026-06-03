@@ -6,7 +6,7 @@ from app.model import load_production_model
 from app.router import router
 
 app = FastAPI(
-    title="Real Estate Price Inference API",
+    title="Real Estate Price Inference API v3",
     description=(
         "Predicción de precios de bienes raíces usando el modelo productivo registrado en MLflow. "
         "Acepta features crudas (incluyendo prev_sold_date como string) y retorna el precio estimado."
