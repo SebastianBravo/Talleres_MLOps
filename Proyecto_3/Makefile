@@ -278,8 +278,17 @@ delete-app:
 	kubectl delete namespace $(NS_AIRFLOW) --ignore-not-found
 
 delete:
-	kubectl delete namespace $(ARGOCD_NS)  --ignore-not-found
-	kubectl wait --for=delete namespace/$(ARGOCD_NS) --timeout=120s || true
+	@echo "Eliminando finalizers de Applications (evita Terminating colgado)..."
+	kubectl get applications -n $(ARGOCD_NS) -o name 2>/dev/null | \
+		xargs -I{} kubectl patch {} -n $(ARGOCD_NS) --type merge \
+		-p '{"metadata":{"finalizers":[]}}' || true
+	kubectl delete namespace $(ARGOCD_NS) --ignore-not-found
+	@if ! kubectl wait --for=delete namespace/$(ARGOCD_NS) --timeout=30s 2>/dev/null; then \
+		echo "Namespace sigue en Terminating, forzando via finalize API..."; \
+		kubectl get namespace $(ARGOCD_NS) -o json \
+			| jq '.spec.finalizers = []' \
+			| kubectl replace --raw /api/v1/namespaces/$(ARGOCD_NS)/finalize -f -; \
+	fi
 	kubectl delete namespace $(NS_INFRA)   --ignore-not-found
 	kubectl delete namespace $(NS_APP)     --ignore-not-found
 	kubectl delete namespace $(NS_OBS)     --ignore-not-found

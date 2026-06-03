@@ -49,18 +49,29 @@ env:
 
 migrateDatabaseJob:
   enabled: true
-  # useHelmHooks: false permite que Argo CD controle el orden en lugar de Helm.
-  # PostSync garantiza que PostgreSQL ya está corriendo antes de migrar.
   useHelmHooks: false
   jobAnnotations:
-    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 
-workers:
-  replicas: 1
+# Sin waitForMigrations el scheduler/webserver/triggerer no mueren con timeout
+# esperando el init container: simplemente regresan y reintantan hasta que la
+# migración (Sync hook) complete.
+scheduler:
+  waitForMigrations:
+    enabled: false
+
+webserver:
+  waitForMigrations:
+    enabled: false
 
 triggerer:
   enabled: true
+  waitForMigrations:
+    enabled: false
+
+workers:
+  replicas: 1
 
 postgresql:
   enabled: true
