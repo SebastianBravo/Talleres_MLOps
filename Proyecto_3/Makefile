@@ -277,15 +277,28 @@ delete-app:
 	kubectl delete namespace $(NS_OBS)     --ignore-not-found
 	kubectl delete namespace $(NS_AIRFLOW) --ignore-not-found
 
-delete:
-	@echo "Eliminando finalizers de Applications (evita Terminating colgado)..."
-	kubectl get applications -n $(ARGOCD_NS) -o name 2>/dev/null | \
-		xargs -I{} kubectl patch {} -n $(ARGOCD_NS) --type merge \
-		-p '{"metadata":{"finalizers":[]}}' || true
-	kubectl delete namespace $(ARGOCD_NS) --ignore-not-found
-	@kubectl get namespace $(ARGOCD_NS) -o json 2>/dev/null \
-		| jq '.spec.finalizers = []' \
+# Forzar la terminacion del namespace de Argo CD cuando queda en "Terminating".
+# 1) quita finalizers de Applications, AppProjects y ApplicationSets
+# 2) borra los CRDs de argoproj.io (sus finalizers tambien bloquean)
+# 3) lanza el delete del namespace en background
+# 4) parchea spec.finalizers=[] del namespace via el endpoint /finalize
+#    (sin depender de jq, para que funcione en Windows/Git Bash)
+force-delete-argocd:
+	@echo "Quitando finalizers de recursos de Argo CD..."
+	-kubectl get applications.argoproj.io     -n $(ARGOCD_NS) -o name 2>/dev/null | xargs -r -I{} kubectl patch {} -n $(ARGOCD_NS) --type merge -p '{"metadata":{"finalizers":[]}}'
+	-kubectl get applicationsets.argoproj.io  -n $(ARGOCD_NS) -o name 2>/dev/null | xargs -r -I{} kubectl patch {} -n $(ARGOCD_NS) --type merge -p '{"metadata":{"finalizers":[]}}'
+	-kubectl get appprojects.argoproj.io      -n $(ARGOCD_NS) -o name 2>/dev/null | xargs -r -I{} kubectl patch {} -n $(ARGOCD_NS) --type merge -p '{"metadata":{"finalizers":[]}}'
+	@echo "Borrando CRDs de argoproj.io..."
+	-kubectl get crd -o name 2>/dev/null | grep 'argoproj.io' | xargs -r kubectl delete --ignore-not-found --wait=false
+	@echo "Borrando namespace $(ARGOCD_NS) (background)..."
+	-kubectl delete namespace $(ARGOCD_NS) --ignore-not-found --wait=false --grace-period=0 --force
+	@echo "Forzando finalize del namespace via API..."
+	-kubectl get namespace $(ARGOCD_NS) -o json 2>/dev/null \
+		| sed 's/"kubernetes"//g' \
 		| kubectl replace --raw /api/v1/namespaces/$(ARGOCD_NS)/finalize -f - 2>/dev/null || true
+	@echo "Namespace $(ARGOCD_NS) eliminado (o ya no existia)."
+
+delete: force-delete-argocd
 	kubectl delete namespace $(NS_INFRA)   --ignore-not-found
 	kubectl delete namespace $(NS_APP)     --ignore-not-found
 	kubectl delete namespace $(NS_OBS)     --ignore-not-found
@@ -298,4 +311,4 @@ delete:
         pipeline-mode full-mode \
         forward forward-adminer stop-forward \
         status restart-api restart-airflow \
-        delete-app delete
+        delete-app delete force-delete-argocd
