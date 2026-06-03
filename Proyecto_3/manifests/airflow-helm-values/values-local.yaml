@@ -47,6 +47,15 @@ env:
   - name: GIT_PYTHON_REFRESH
     value: quiet
 
+migrateDatabaseJob:
+  enabled: true
+  # useHelmHooks: false permite que Argo CD controle el orden en lugar de Helm.
+  # PostSync garantiza que PostgreSQL ya está corriendo antes de migrar.
+  useHelmHooks: false
+  jobAnnotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+
 workers:
   replicas: 1
 
