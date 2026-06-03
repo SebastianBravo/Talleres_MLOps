@@ -155,7 +155,7 @@ deploy: argocd-install argocd-bootstrap argocd-wait
 # ─────────────────────────────────────────────
 
 forward:
-	kubectl port-forward svc/airflow-webserver 8080:8080 -n $(NS_AIRFLOW) &
+	kubectl port-forward svc/mlops-airflow-webserver 8080:8080 -n $(NS_AIRFLOW) &
 	kubectl port-forward svc/mlflow            5000:5000 -n $(NS_INFRA)   &
 	kubectl port-forward svc/api               8000:8000 -n $(NS_APP)     &
 	kubectl port-forward svc/streamlit         8501:8501 -n $(NS_APP)     &
@@ -283,12 +283,9 @@ delete:
 		xargs -I{} kubectl patch {} -n $(ARGOCD_NS) --type merge \
 		-p '{"metadata":{"finalizers":[]}}' || true
 	kubectl delete namespace $(ARGOCD_NS) --ignore-not-found
-	@if ! kubectl wait --for=delete namespace/$(ARGOCD_NS) --timeout=30s 2>/dev/null; then \
-		echo "Namespace sigue en Terminating, forzando via finalize API..."; \
-		kubectl get namespace $(ARGOCD_NS) -o json \
-			| jq '.spec.finalizers = []' \
-			| kubectl replace --raw /api/v1/namespaces/$(ARGOCD_NS)/finalize -f -; \
-	fi
+	@kubectl get namespace $(ARGOCD_NS) -o json 2>/dev/null \
+		| jq '.spec.finalizers = []' \
+		| kubectl replace --raw /api/v1/namespaces/$(ARGOCD_NS)/finalize -f - 2>/dev/null || true
 	kubectl delete namespace $(NS_INFRA)   --ignore-not-found
 	kubectl delete namespace $(NS_APP)     --ignore-not-found
 	kubectl delete namespace $(NS_OBS)     --ignore-not-found
