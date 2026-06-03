@@ -121,16 +121,18 @@ argocd-status:
 	kubectl get applications -n $(ARGOCD_NS)
 
 # Espera a que Argo CD cree y deje sanas las Applications de cada capa.
+# Las hijas se crean por olas (sync-waves): namespaces -> infra -> app/obs.
+# Por eso se espera primero a que CADA Application exista y luego a que quede
+# Healthy, en orden de ola.
 argocd-wait:
-	@echo "Esperando a que Argo CD cree las Applications..."
-	@until kubectl get application mlops-infra -n $(ARGOCD_NS) >/dev/null 2>&1; do \
-		echo "  ...aun no existen, reintentando"; sleep 3; \
+	@echo "Esperando a que Argo CD cree y sincronice las Applications (waves 0->2)..."
+	@for app in mlops-namespaces mlops-infra mlops-app mlops-obs; do \
+		echo "  -> esperando a que exista $$app..."; \
+		until kubectl get application $$app -n $(ARGOCD_NS) >/dev/null 2>&1; do sleep 5; done; \
+		echo "  -> esperando a que $$app quede Healthy..."; \
+		kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/$$app -n $(ARGOCD_NS) --timeout=600s; \
 	done
-	@echo "Esperando a que infra/app/obs queden Healthy (puede tardar varios minutos)..."
-	kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/mlops-infra -n $(ARGOCD_NS) --timeout=600s
-	kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/mlops-app   -n $(ARGOCD_NS) --timeout=600s
-	kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/mlops-obs   -n $(ARGOCD_NS) --timeout=600s
-	@echo "Capas infra/app/obs sincronizadas por Argo CD."
+	@echo "Todas las capas (namespaces/infra/app/obs) sincronizadas por Argo CD."
 
 # Despliegue completo del proyecto VIA ARGO CD (flujo principal).
 # Instala Argo, aplica el App-of-Apps, espera la sincronizacion y luego Airflow.
