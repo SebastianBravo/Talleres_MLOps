@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mlops-namespaces
+  namespace: argocd
+  annotations:
+    # Wave 0: los namespaces deben existir antes que cualquier otra capa.
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: mlops
+
+  source:
+    repoURL: https://github.com/SebastianBravo/Talleres_MLOps.git
+    targetRevision: feature/proyecto3_airflow
+    path: Proyecto_3/manifests/namespaces
+    directory:
+      recurse: false
+
+  destination:
+    server: https://kubernetes.default.svc
+    # Recursos cluster-scoped (Namespace) ignoran este campo.
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

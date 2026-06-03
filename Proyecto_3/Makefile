@@ -83,6 +83,42 @@ deploy-adminer:
 deploy: namespaces deploy-infra wait-infra minio-init deploy-app deploy-obs deploy-airflow
 
 # ─────────────────────────────────────────────
+# GITOPS — Argo CD (flujo principal de despliegue)
+# ─────────────────────────────────────────────
+
+ARGOCD_NS = argocd
+
+# Instala Argo CD en el clúster (paso de bootstrap, una sola vez).
+argocd-install:
+	kubectl create namespace $(ARGOCD_NS) --dry-run=client -o yaml | kubectl apply -f -
+	kubectl apply -n $(ARGOCD_NS) -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+	@echo "Esperando a que Argo CD este listo..."
+	kubectl wait --for=condition=available deployment/argocd-server -n $(ARGOCD_NS) --timeout=300s
+	@echo "Argo CD instalado."
+
+# Aplica el AppProject y la Application raiz (App-of-Apps).
+# A partir de aqui Argo sincroniza namespaces -> infra -> app -> obs desde Git.
+argocd-bootstrap:
+	kubectl apply -f $(MANIFESTS)/argocd/project.yaml
+	kubectl apply -f $(MANIFESTS)/argocd/root-app.yaml
+	@echo "Application raiz aplicada. Argo CD comenzara a sincronizar las capas."
+	@echo "Airflow se despliega aparte: make deploy-airflow"
+
+# Muestra la contrasena inicial del usuario admin de la UI de Argo CD.
+argocd-password:
+	@kubectl -n $(ARGOCD_NS) get secret argocd-initial-admin-secret \
+		-o jsonpath='{.data.password}' | base64 -d; echo
+
+# Abre la UI de Argo CD en https://localhost:8083
+argocd-forward:
+	kubectl port-forward svc/argocd-server 8083:443 -n $(ARGOCD_NS) &
+	@echo "  Argo CD UI       -> https://localhost:8083  (admin / make argocd-password)"
+
+# Estado de las Applications gestionadas por Argo CD.
+argocd-status:
+	kubectl get applications -n $(ARGOCD_NS)
+
+# ─────────────────────────────────────────────
 # KUBERNETES — acceso local (port-forward)
 # ─────────────────────────────────────────────
 
@@ -158,6 +194,7 @@ delete:
 
 .PHONY: namespaces \
         deploy-infra wait-infra minio-init deploy-app deploy-obs deploy-airflow airflow-migrate deploy \
+        argocd-install argocd-bootstrap argocd-password argocd-forward argocd-status \
         deploy-adminer \
         forward forward-adminer stop-forward \
         status restart-api restart-airflow \

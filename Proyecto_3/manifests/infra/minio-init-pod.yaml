@@ -5,6 +5,13 @@ metadata:
   namespace: mlops-infra
   labels:
     app: minio-init
+  annotations:
+    # Argo CD: ejecuta este Pod como hook PostSync (tras desplegar la infra) y lo
+    # elimina al terminar, evitando que quede como recurso huérfano que Argo
+    # intente recrear/marcar OutOfSync en cada sync. Fuera de Argo (make minio-init)
+    # el Pod corre igual: estas anotaciones son inertes para kubectl.
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
 spec:
   containers:
     - name: minio-init

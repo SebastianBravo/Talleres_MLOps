@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mlops-app
+  namespace: argocd
+  annotations:
+    # Wave 2: capa de aplicación (API de inferencia + Streamlit).
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: mlops
+
+  source:
+    repoURL: https://github.com/SebastianBravo/Talleres_MLOps.git
+    targetRevision: feature/proyecto3_airflow
+    path: Proyecto_3/manifests/app
+    directory:
+      recurse: true
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mlops-app
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

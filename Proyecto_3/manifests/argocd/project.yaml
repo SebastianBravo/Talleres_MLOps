@@ -1,0 +1,38 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: mlops
+  namespace: argocd
+  # Evita que el proyecto sea borrado mientras tenga Applications asociadas.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Proyecto_3 — pipeline MLOps de real estate (infra + app + obs)
+
+  # Repositorio fuente de los manifiestos.
+  sourceRepos:
+    - https://github.com/SebastianBravo/Talleres_MLOps.git
+
+  # Namespaces del clúster local donde las Applications pueden desplegar.
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: mlops-infra
+    - server: https://kubernetes.default.svc
+      namespace: mlops-app
+    - server: https://kubernetes.default.svc
+      namespace: mlops-obs
+    - server: https://kubernetes.default.svc
+      namespace: mlops-airflow
+    # Necesario para que la Application raíz cree Applications hijas en argocd.
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+
+  # Recursos cluster-scoped permitidos (la app de namespaces crea Namespaces).
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  # Permite cualquier recurso namespaced (Deployment, Service, ConfigMap, etc.).
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"

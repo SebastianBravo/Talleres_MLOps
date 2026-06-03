@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mlops-infra
+  namespace: argocd
+  annotations:
+    # Wave 1: infraestructura base (postgres, minio, mlflow, api-source).
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: mlops
+
+  source:
+    repoURL: https://github.com/SebastianBravo/Talleres_MLOps.git
+    targetRevision: feature/proyecto3_airflow
+    path: Proyecto_3/manifests/infra
+    directory:
+      recurse: true
+      # Adminer es una herramienta opcional, no parte del pipeline principal.
+      exclude: "adminer/*"
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mlops-infra
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -296,6 +296,53 @@ make delete-app          # Elimina mlops-app, mlops-obs y mlops-airflow
 make delete              # Elimina todos los namespaces (destruye todo)
 ```
 
+### Despliegue GitOps con Argo CD (flujo principal)
+
+El mecanismo principal de despliegue es **Argo CD**, que sincroniza los manifiestos versionados en Git con el clúster (visión GitOps). `make deploy` y los `kubectl apply` por capas se conservan únicamente como respaldo.
+
+Se usa el patrón **App-of-Apps**: una `Application` raíz (`mlops-root`) gestiona un conjunto de `Application`s hijas, una por capa, ordenadas con *sync-waves*:
+
+| Wave | Application | Path en Git | Namespace |
+|---|---|---|---|
+| 0 | `mlops-namespaces` | `manifests/namespaces/` | (crea los 4 ns) |
+| 1 | `mlops-infra` | `manifests/infra/` | `mlops-infra` |
+| 2 | `mlops-app` | `manifests/app/` | `mlops-app` |
+| 2 | `mlops-obs` | `manifests/obs/` | `mlops-obs` |
+
+El init de buckets de MinIO (`minio-init`) corre como **hook PostSync** de Argo y se autoelimina al terminar. **Airflow se despliega aparte** con `make deploy-airflow` (chart de Helm), no vía Argo CD.
+
+```
+manifests/argocd/
+├── project.yaml          ← AppProject "mlops"
+├── root-app.yaml         ← Application raíz (App-of-Apps)
+└── applications/
+    ├── 00-namespaces.yaml
+    ├── 10-infra.yaml
+    ├── 20-app.yaml
+    └── 20-obs.yaml
+```
+
+**Bootstrap (único paso manual):**
+
+```bash
+cd Proyecto_3
+make argocd-install      # Instala Argo CD en el namespace argocd
+make argocd-bootstrap     # Aplica project + root-app → Argo sincroniza todo desde Git
+make deploy-airflow       # Airflow (fuera de Argo)
+```
+
+**Acceso a la UI de Argo CD:**
+
+```bash
+make argocd-forward       # UI en https://localhost:8083
+make argocd-password      # Contraseña inicial del usuario admin
+make argocd-status        # Estado de las Applications
+```
+
+Las `Application`s siguen la rama `feature/proyecto3_airflow` con `prune` y `selfHeal` activados: cualquier cambio en los manifiestos (incluida una nueva etiqueta de imagen `sha-*` / `dev`) se sincroniza automáticamente.
+
+---
+
 ### Imágenes Docker (DockerHub)
 
 | Imagen | Tag estable | Descripción |
