@@ -24,7 +24,7 @@ jobs:
     name: Build & Push
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write   # necesario para el write-back del tag al manifiesto
 
     steps:
       - name: Checkout
@@ -69,3 +69,25 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+      # GitOps write-back: apunta el manifiesto al tag inmutable sha-<commit>.
+      # Argo CD detecta el cambio en Git y redespliega Streamlit automaticamente.
+      # El commit toca solo manifests/, que no esta en los paths de este
+      # workflow, asi que no se vuelve a disparar el build (sin bucle).
+      - name: GitOps write-back — actualizar tag en el manifiesto
+        if: github.event_name != 'pull_request'
+        run: |
+          set -e
+          TAG="sha-$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          FILE="Proyecto_3/manifests/app/streamlit/streamlit-deployment.yaml"
+          sed -i -E "s#(image: ${IMAGE_NAME}:).*#\1${TAG}#" "$FILE"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- "$FILE"; then
+            echo "El manifiesto ya apunta a ${TAG}; nada que hacer."
+            exit 0
+          fi
+          git add "$FILE"
+          git commit -m "ci(streamlit): set image ${TAG} [skip ci]"
+          git push origin HEAD:${GITHUB_REF_NAME}
+          echo "Manifiesto actualizado a ${TAG} y pusheado a ${GITHUB_REF_NAME}."
