@@ -80,14 +80,33 @@ jobs:
           set -e
           TAG="sha-$(echo "${GITHUB_SHA}" | cut -c1-7)"
           FILE="Proyecto_3/manifests/app/streamlit/streamlit-deployment.yaml"
-          sed -i -E "s#(image: ${IMAGE_NAME}:).*#\1${TAG}#" "$FILE"
+          BRANCH="${GITHUB_REF_NAME}"
+          # Reutiliza el mensaje y autor del commit que disparo el build, para que
+          # en Argo se vea ese mensaje y no un "set image ..." generico del bot.
+          SUBJECT="$(git log -1 --pretty=%s "${GITHUB_SHA}")"
+          AUTHOR_NAME="$(git log -1 --pretty=%an "${GITHUB_SHA}")"
+          AUTHOR_EMAIL="$(git log -1 --pretty=%ae "${GITHUB_SHA}")"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- "$FILE"; then
-            echo "El manifiesto ya apunta a ${TAG}; nada que hacer."
-            exit 0
-          fi
-          git add "$FILE"
-          git commit -m "ci(streamlit): set image ${TAG} [skip ci]"
-          git push origin HEAD:${GITHUB_REF_NAME}
-          echo "Manifiesto actualizado a ${TAG} y pusheado a ${GITHUB_REF_NAME}."
+          # Reintenta para tolerar pushes concurrentes (p.ej. el workflow de la API).
+          # En cada intento se reposiciona sobre la punta mas reciente de la rama.
+          for attempt in 1 2 3 4 5; do
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+            sed -i -E "s#(image: ${IMAGE_NAME}:).*#\1${TAG}#" "$FILE"
+            if git diff --quiet -- "$FILE"; then
+              echo "El manifiesto ya apunta a ${TAG}; nada que hacer."
+              exit 0
+            fi
+            git add "$FILE"
+            git commit --author="${AUTHOR_NAME} <${AUTHOR_EMAIL}>" \
+              -m "${SUBJECT} [deploy ${TAG}] [skip ci]"
+            if git push origin "HEAD:$BRANCH"; then
+              echo "Manifiesto actualizado a ${TAG} (intento $attempt)."
+              exit 0
+            fi
+            echo "Push rechazado (intento $attempt); reintento sobre el tip mas reciente..."
+            sleep 3
+          done
+          echo "No se pudo pushear el write-back tras varios intentos." >&2
+          exit 1
