@@ -165,8 +165,10 @@ forward:
 	kubectl port-forward svc/mlflow-db         5433:5432 -n $(NS_INFRA)   &
 	kubectl port-forward svc/minio             9001:9001 -n $(NS_INFRA)   &
 	kubectl port-forward svc/api-source        8001:80   -n $(NS_INFRA)   &
+	kubectl port-forward svc/argocd-server     8083:443  -n $(ARGOCD_NS)  &
 	@echo ""
 	@echo "Servicios disponibles:"
+	@echo "  Argo CD          → https://localhost:8083 (admin / make argocd-password)"
 	@echo "  Airflow          → http://localhost:8080  (airflow / airflow)"
 	@echo "  MLflow           → http://localhost:5000"
 	@echo "  API              → http://localhost:8000/docs"
