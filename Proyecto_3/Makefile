@@ -61,8 +61,9 @@ airflow-migrate:
 		pod/airflow-migrate -n $(NS_AIRFLOW) --timeout=180s
 	@echo "Migraciones de Airflow aplicadas."
 
-deploy-airflow:
-	@which helm > /dev/null 2>&1 || brew install helm
+# Instala/actualiza el chart de Helm de Airflow y espera a su PostgreSQL.
+airflow-helm:
+	@which helm > /dev/null 2>&1 || { echo "ERROR: 'helm' no esta instalado o no esta en el PATH."; echo "Instalalo (Mac: brew install helm | Windows: winget install Helm.Helm)"; exit 1; }
 	helm repo add apache-airflow https://airflow.apache.org --force-update
 	helm repo update
 	helm upgrade --install airflow apache-airflow/airflow \
@@ -73,7 +74,13 @@ deploy-airflow:
 	@echo "Esperando PostgreSQL de Airflow..."
 	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=postgresql \
 		-n $(NS_AIRFLOW) --timeout=120s
-	$(MAKE) airflow-migrate
+
+# Despliega Airflow: instala el chart y luego aplica las migraciones.
+# Se usan prerequisitos (no $(MAKE) recursivo) para que funcione igual en
+# Mac/Linux y en Windows, donde la ruta de make tiene espacios y parentesis
+# que rompen la llamada recursiva via shell.
+deploy-airflow: airflow-helm airflow-migrate
+	@echo "Airflow desplegado en el namespace $(NS_AIRFLOW)."
 
 # Herramientas opcionales (no forman parte del pipeline principal)
 deploy-adminer:
@@ -217,7 +224,7 @@ delete:
 	kubectl delete namespace $(NS_AIRFLOW) --ignore-not-found
 
 .PHONY: namespaces \
-        deploy-infra wait-infra minio-init deploy-app deploy-obs deploy-airflow airflow-migrate deploy deploy-kubectl \
+        deploy-infra wait-infra minio-init deploy-app deploy-obs deploy-airflow airflow-helm airflow-migrate deploy deploy-kubectl \
         argocd-install argocd-bootstrap argocd-wait argocd-password argocd-forward argocd-status \
         deploy-adminer \
         forward forward-adminer stop-forward \
