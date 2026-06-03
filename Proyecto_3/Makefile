@@ -79,8 +79,8 @@ deploy-airflow:
 deploy-adminer:
 	kubectl apply -f $(MANIFESTS)/infra/adminer/ -n $(NS_INFRA)
 
-# Despliega todo en orden
-deploy: namespaces deploy-infra wait-infra minio-init deploy-app deploy-obs deploy-airflow
+# Despliegue imperativo (sin Argo) — se conserva como respaldo.
+deploy-kubectl: namespaces deploy-infra wait-infra minio-init deploy-app deploy-obs deploy-airflow
 
 # ─────────────────────────────────────────────
 # GITOPS — Argo CD (flujo principal de despliegue)
@@ -117,6 +117,26 @@ argocd-forward:
 # Estado de las Applications gestionadas por Argo CD.
 argocd-status:
 	kubectl get applications -n $(ARGOCD_NS)
+
+# Espera a que Argo CD cree y deje sanas las Applications de cada capa.
+argocd-wait:
+	@echo "Esperando a que Argo CD cree las Applications..."
+	@until kubectl get application mlops-infra -n $(ARGOCD_NS) >/dev/null 2>&1; do \
+		echo "  ...aun no existen, reintentando"; sleep 3; \
+	done
+	@echo "Esperando a que infra/app/obs queden Healthy (puede tardar varios minutos)..."
+	kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/mlops-infra -n $(ARGOCD_NS) --timeout=600s
+	kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/mlops-app   -n $(ARGOCD_NS) --timeout=600s
+	kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/mlops-obs   -n $(ARGOCD_NS) --timeout=600s
+	@echo "Capas infra/app/obs sincronizadas por Argo CD."
+
+# Despliegue completo del proyecto VIA ARGO CD (flujo principal).
+# Instala Argo, aplica el App-of-Apps, espera la sincronizacion y luego Airflow.
+deploy: argocd-install argocd-bootstrap argocd-wait deploy-airflow
+	@echo ""
+	@echo "Proyecto desplegado. Argo CD gestiona infra/app/obs; Airflow va aparte."
+	@echo "UI de Argo:  make argocd-forward   ->  https://localhost:8083"
+	@echo "Servicios:   make forward"
 
 # ─────────────────────────────────────────────
 # KUBERNETES — acceso local (port-forward)
@@ -193,8 +213,8 @@ delete:
 	kubectl delete namespace $(NS_AIRFLOW) --ignore-not-found
 
 .PHONY: namespaces \
-        deploy-infra wait-infra minio-init deploy-app deploy-obs deploy-airflow airflow-migrate deploy \
-        argocd-install argocd-bootstrap argocd-password argocd-forward argocd-status \
+        deploy-infra wait-infra minio-init deploy-app deploy-obs deploy-airflow airflow-migrate deploy deploy-kubectl \
+        argocd-install argocd-bootstrap argocd-wait argocd-password argocd-forward argocd-status \
         deploy-adminer \
         forward forward-adminer stop-forward \
         status restart-api restart-airflow \
