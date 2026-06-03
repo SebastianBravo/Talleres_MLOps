@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: bravosjs/mlops-api:sha-32e6d01
+          image: bravosjs/mlops-api:sha-bbd625d
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
