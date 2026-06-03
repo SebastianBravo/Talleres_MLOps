@@ -111,7 +111,7 @@ argocd-bootstrap:
 	kubectl apply -f $(MANIFESTS)/argocd/project.yaml
 	kubectl apply -f $(MANIFESTS)/argocd/root-app.yaml
 	@echo "Application raiz aplicada. Argo CD comenzara a sincronizar las capas."
-	@echo "Airflow se despliega aparte: make deploy-airflow"
+	@echo "Airflow (wave 3) sera desplegado automaticamente via Helm por Argo CD."
 
 # Muestra la contrasena inicial del usuario admin de la UI de Argo CD.
 argocd-password:
@@ -128,24 +128,25 @@ argocd-status:
 	kubectl get applications -n $(ARGOCD_NS)
 
 # Espera a que Argo CD cree y deje sanas las Applications de cada capa.
-# Las hijas se crean por olas (sync-waves): namespaces -> infra -> app/obs.
+# Las hijas se crean por olas (sync-waves): namespaces -> infra -> app/obs -> airflow.
 # Por eso se espera primero a que CADA Application exista y luego a que quede
 # Healthy, en orden de ola.
 argocd-wait:
-	@echo "Esperando a que Argo CD cree y sincronice las Applications (waves 0->2)..."
-	@for app in mlops-namespaces mlops-infra mlops-app mlops-obs; do \
+	@echo "Esperando a que Argo CD cree y sincronice las Applications (waves 0->3)..."
+	@for app in mlops-namespaces mlops-infra mlops-app mlops-obs mlops-airflow; do \
 		echo "  -> esperando a que exista $$app..."; \
 		until kubectl get application $$app -n $(ARGOCD_NS) >/dev/null 2>&1; do sleep 5; done; \
 		echo "  -> esperando a que $$app quede Healthy..."; \
 		kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/$$app -n $(ARGOCD_NS) --timeout=600s; \
 	done
-	@echo "Todas las capas (namespaces/infra/app/obs) sincronizadas por Argo CD."
+	@echo "Todas las capas (namespaces/infra/app/obs/airflow) sincronizadas por Argo CD."
 
 # Despliegue completo del proyecto VIA ARGO CD (flujo principal).
-# Instala Argo, aplica el App-of-Apps, espera la sincronizacion y luego Airflow.
-deploy: argocd-install argocd-bootstrap argocd-wait deploy-airflow
+# Instala Argo, aplica el App-of-Apps y espera a que todas las capas sincronicen.
+# Airflow se despliega como wave 3 gestionado por el chart de Helm de Argo CD.
+deploy: argocd-install argocd-bootstrap argocd-wait
 	@echo ""
-	@echo "Proyecto desplegado. Argo CD gestiona infra/app/obs; Airflow va aparte."
+	@echo "Proyecto desplegado. Argo CD gestiona todas las capas incluyendo Airflow."
 	@echo "UI de Argo:  make argocd-forward   ->  https://localhost:8083"
 	@echo "Servicios:   make forward"
 
@@ -211,6 +212,63 @@ restart-airflow:
 	kubectl rollout restart deployment/airflow-webserver  -n $(NS_AIRFLOW)
 
 # ─────────────────────────────────────────────
+# GESTIÓN DE RECURSOS — modo pipeline / modo completo
+# ─────────────────────────────────────────────
+
+# Libera RAM apagando streamlit, observabilidad y Argo CD mientras el DAG corre.
+# La API de inferencia (mlops-app/api) se mantiene activa porque el DAG la usa.
+# Orden: 1) deshabilitar selfHeal (Argo aún activo), 2) bajar servicios, 3) bajar Argo.
+pipeline-mode:
+	@echo "1/3 Desactivando selfHeal en Argo CD (app y obs)..."
+	kubectl patch application mlops-app -n $(ARGOCD_NS) --type merge \
+		-p '{"spec":{"syncPolicy":{"automated":{"selfHeal":false}}}}'
+	kubectl patch application mlops-obs -n $(ARGOCD_NS) --type merge \
+		-p '{"spec":{"syncPolicy":{"automated":{"selfHeal":false}}}}'
+	@echo "2/3 Escalando a 0 streamlit y observabilidad..."
+	kubectl scale deployment streamlit  --replicas=0 -n $(NS_APP)
+	kubectl scale deployment prometheus --replicas=0 -n $(NS_OBS)
+	kubectl scale deployment grafana    --replicas=0 -n $(NS_OBS)
+	kubectl scale deployment locust     --replicas=0 -n $(NS_OBS)
+	@echo "3/3 Escalando a 0 los componentes de Argo CD..."
+	kubectl scale deployment argocd-server                  --replicas=0 -n $(ARGOCD_NS)
+	kubectl scale deployment argocd-repo-server             --replicas=0 -n $(ARGOCD_NS)
+	kubectl scale deployment argocd-dex-server              --replicas=0 -n $(ARGOCD_NS)
+	kubectl scale deployment argocd-redis                   --replicas=0 -n $(ARGOCD_NS)
+	kubectl scale deployment argocd-notifications-controller --replicas=0 -n $(ARGOCD_NS)
+	kubectl scale deployment argocd-applicationset-controller --replicas=0 -n $(ARGOCD_NS)
+	kubectl scale statefulset argocd-application-controller --replicas=0 -n $(ARGOCD_NS)
+	@echo ""
+	@echo "Modo pipeline activo. Corren: infra + api + airflow."
+	@echo "Cuando el DAG termine, ejecuta: make full-mode"
+
+# Reactiva Argo CD, luego restaura selfHeal y sube streamlit y observabilidad.
+# Orden inverso: 1) subir Argo, 2) restaurar selfHeal, 3) subir servicios.
+full-mode:
+	@echo "1/3 Escalando a 1 los componentes de Argo CD..."
+	kubectl scale statefulset argocd-application-controller  --replicas=1 -n $(ARGOCD_NS)
+	kubectl scale deployment argocd-redis                    --replicas=1 -n $(ARGOCD_NS)
+	kubectl scale deployment argocd-repo-server              --replicas=1 -n $(ARGOCD_NS)
+	kubectl scale deployment argocd-dex-server               --replicas=1 -n $(ARGOCD_NS)
+	kubectl scale deployment argocd-server                   --replicas=1 -n $(ARGOCD_NS)
+	kubectl scale deployment argocd-notifications-controller  --replicas=1 -n $(ARGOCD_NS)
+	kubectl scale deployment argocd-applicationset-controller --replicas=1 -n $(ARGOCD_NS)
+	@echo "Esperando a que Argo CD este listo..."
+	kubectl wait --for=condition=available deployment/argocd-server -n $(ARGOCD_NS) --timeout=120s
+	@echo "2/3 Reactivando selfHeal en Argo CD (app y obs)..."
+	kubectl patch application mlops-app -n $(ARGOCD_NS) --type merge \
+		-p '{"spec":{"syncPolicy":{"automated":{"selfHeal":true}}}}'
+	kubectl patch application mlops-obs -n $(ARGOCD_NS) --type merge \
+		-p '{"spec":{"syncPolicy":{"automated":{"selfHeal":true}}}}'
+	@echo "3/3 Escalando a 1 streamlit y observabilidad..."
+	kubectl scale deployment streamlit  --replicas=1 -n $(NS_APP)
+	kubectl scale deployment prometheus --replicas=1 -n $(NS_OBS)
+	kubectl scale deployment grafana    --replicas=1 -n $(NS_OBS)
+	kubectl scale deployment locust     --replicas=1 -n $(NS_OBS)
+	@echo ""
+	@echo "Modo completo activo. Todos los servicios disponibles."
+	@echo "Levanta los port-forwards con: make forward"
+
+# ─────────────────────────────────────────────
 # KUBERNETES — limpieza
 # ─────────────────────────────────────────────
 
@@ -220,6 +278,8 @@ delete-app:
 	kubectl delete namespace $(NS_AIRFLOW) --ignore-not-found
 
 delete:
+	kubectl delete namespace $(ARGOCD_NS)  --ignore-not-found
+	kubectl wait --for=delete namespace/$(ARGOCD_NS) --timeout=120s || true
 	kubectl delete namespace $(NS_INFRA)   --ignore-not-found
 	kubectl delete namespace $(NS_APP)     --ignore-not-found
 	kubectl delete namespace $(NS_OBS)     --ignore-not-found
@@ -229,6 +289,7 @@ delete:
         deploy-infra wait-infra minio-init deploy-app deploy-obs deploy-airflow airflow-helm airflow-migrate deploy deploy-kubectl \
         argocd-install argocd-bootstrap argocd-wait argocd-password argocd-forward argocd-status \
         deploy-adminer \
+        pipeline-mode full-mode \
         forward forward-adminer stop-forward \
         status restart-api restart-airflow \
         delete-app delete

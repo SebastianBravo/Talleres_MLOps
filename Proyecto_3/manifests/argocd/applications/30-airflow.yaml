@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mlops-airflow
+  namespace: argocd
+  annotations:
+    # Wave 3: Airflow via Helm (depende de infra — postgres, minio, mlflow).
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: mlops
+
+  # Multi-source: chart desde el repo oficial de Helm, values desde Git.
+  sources:
+    - repoURL: https://airflow.apache.org
+      chart: airflow
+      targetRevision: "1.*"
+      helm:
+        valueFiles:
+          - $values/Proyecto_3/manifests/airflow-helm-values/values-local.yaml
+    - repoURL: https://github.com/SebastianBravo/Talleres_MLOps.git
+      targetRevision: feature/proyecto3_airflow
+      ref: values
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mlops-airflow
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -9,9 +9,10 @@ metadata:
 spec:
   description: Proyecto_3 — pipeline MLOps de real estate (infra + app + obs)
 
-  # Repositorio fuente de los manifiestos.
+  # Repositorios fuente: manifiestos en Git + chart de Airflow en Helm.
   sourceRepos:
     - https://github.com/SebastianBravo/Talleres_MLOps.git
+    - https://airflow.apache.org
 
   # Namespaces del clúster local donde las Applications pueden desplegar.
   destinations:

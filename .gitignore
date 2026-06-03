@@ -208,3 +208,6 @@ __marimo__/
 
 # Airflow folders
 logs/
+
+# MacOS
+.DS_Store
