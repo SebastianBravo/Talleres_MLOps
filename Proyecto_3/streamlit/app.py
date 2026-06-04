@@ -81,7 +81,7 @@ with st.sidebar:
 
 # ─── Title ────────────────────────────────────────────────────────────────────
 
-st.title("Real Estate Price Prediction V2")
+st.title("Real Estate Price Prediction")
 st.caption("Prediccion de precios de propiedades inmobiliarias — RandomForestRegressor via MLflow")
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
