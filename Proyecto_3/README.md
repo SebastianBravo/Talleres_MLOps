@@ -11,20 +11,47 @@ Pipeline incremental de MLOps para predicción de precios de bienes raíces. El 
 
 ## Tabla de contenido
 
+0. [Cumplimiento del enunciado](#cumplimiento-del-enunciado)
 1. [Arquitectura](#1-arquitectura)
-2. [Componentes](#2-componentes)
-3. [Estructura del proyecto](#3-estructura-del-proyecto)
-4. [Prerrequisitos](#4-prerrequisitos)
-5. [Despliegue local — Docker Compose](#5-despliegue-local--docker-compose)
-6. [Despliegue en Kubernetes](#6-despliegue-en-kubernetes)
-7. [GitOps — Argo CD](#7-gitops--argo-cd)
-8. [CI/CD — GitHub Actions](#8-cicd--github-actions)
-9. [Flujo del pipeline MLOps](#9-flujo-del-pipeline-mlops)
-10. [Interfaz web — Streamlit](#10-interfaz-web--streamlit)
-11. [Observabilidad — Grafana & Prometheus](#11-observabilidad--grafana--prometheus)
-12. [Pruebas de carga — Locust](#12-pruebas-de-carga--locust)
-13. [MLflow — Tracking y Registry](#13-mlflow--tracking-y-registry)
-14. [Gestión de recursos en Kubernetes](#14-gestión-de-recursos-en-kubernetes)
+2. [Lectura de evidencias](#2-lectura-de-evidencias)
+3. [Componentes](#3-componentes)
+4. [Estructura del proyecto](#4-estructura-del-proyecto)
+5. [Prerrequisitos](#5-prerrequisitos)
+6. [Despliegue local — Docker Compose](#6-despliegue-local--docker-compose)
+7. [Despliegue en Kubernetes](#7-despliegue-en-kubernetes)
+8. [GitOps — Argo CD](#8-gitops--argo-cd)
+9. [CI/CD — GitHub Actions](#9-cicd--github-actions)
+10. [Flujo del pipeline MLOps](#10-flujo-del-pipeline-mlops)
+11. [Interfaz web — Streamlit](#11-interfaz-web--streamlit)
+12. [Observabilidad — Grafana & Prometheus](#12-observabilidad--grafana--prometheus)
+13. [Pruebas de carga — Locust](#13-pruebas-de-carga--locust)
+14. [MLflow — Tracking y Registry](#14-mlflow--tracking-y-registry)
+15. [Gestión de recursos en Kubernetes](#15-gestión-de-recursos-en-kubernetes)
+
+---
+
+## Cumplimiento del enunciado
+
+Este README se estructura alrededor del proyecto final **Nivel 4: automatización,
+decisión de reentrenamiento y despliegue GitOps**. La siguiente matriz resume
+dónde se implementa y documenta cada requerimiento funcional o entregable.
+
+| Requisito del proyecto | Implementación en este repositorio | Evidencia principal |
+|---|---|---|
+| RF1. Recolección incremental desde API externa | Airflow consume `cristiandiaz13/mlops-puj:data-api-pf-v1` por lotes con `GET /data?group_number=7` | `Airflow/dags/data_dag.py`, `Airflow/dags/utils/dataset_io.py`, sección [Flujo del pipeline](#10-flujo-del-pipeline-mlops) |
+| RF2. Separación RAW DATA / CLEAN DATA | `property_raw` conserva datos originales y `property_clean` guarda snapshots procesados por `preprocessor_version` | [Airflow/README.md](Airflow/README.md), `Airflow/dags/utils/db_schema.py`, `Airflow/dags/utils/preprocess.py` |
+| RF3. Validación de datos y control de cambios | Validación de esquema, calidad, rangos, duplicados, categorías nuevas y drift KS | `Airflow/dags/utils/validation.py`, `Airflow/dags/utils/drift_detection.py` |
+| RF4. Decisión automática de entrenamiento | `BranchPythonOperator` decide entrenar o saltar según modelo productivo, volumen, nuevas categorías y drift | `Airflow/dags/utils/training_decision.py`, sección [Criterios de entrenamiento](#10-flujo-del-pipeline-mlops) |
+| RF5. Entrenamiento y registro en MLflow | RandomForestRegressor registra parámetros, métricas, tags, artefactos y modelo serializado en MLflow | `Airflow/dags/utils/training.py`, sección [MLflow](#14-mlflow--tracking-y-registry) |
+| RF6. Comparación contra producción | El candidato se compara contra el alias `production` y se promueve solo si mejora MAE y controla RMSE | `Airflow/dags/utils/model_comparison.py`, sección [Criterio de promoción](#10-flujo-del-pipeline-mlops) |
+| RF7. Actualización de API sin redespliegue | FastAPI carga el alias `production` desde MLflow y expone `POST /reload` para recarga en caliente | [api/README.md](api/README.md), `api/app/model.py`, `api/app/router.py` |
+| RF8. Registro de inferencias | Cada predicción exitosa se registra en `inference_logs` con entrada, predicción, versión de modelo y latencia | `api/app/database.py`, [api/README.md](api/README.md) |
+| RF9. Streamlit | Interfaz con formulario de inferencia e historial de entrenamiento/promoción por lote | [streamlit/README.md](streamlit/README.md), `streamlit/app.py` |
+| RF10. Observabilidad y carga | API instrumentada con Prometheus, dashboard Grafana y Locust contra `POST /predict` | `api/main.py`, `prometheus/prometheus.yml`, `grafana/dashboards/api_dashboard.json`, `locust/locustfile.py` |
+| CI/CD y DockerHub | Workflows construyen y publican imágenes propias con tags `sha-*`, `dev` y `latest` según rama | `.github/workflows/`, sección [CI/CD](#9-cicd--github-actions) |
+| Kubernetes y GitOps | Manifiestos versionados por namespace y App-of-Apps de Argo CD para sincronización declarativa | `manifests/`, sección [GitOps](#8-gitops--argo-cd) |
+| Recursos, probes y persistencia | Manifiestos de app, infra y observabilidad declaran `resources`, probes, servicios y PVCs donde aplica | `manifests/app/`, `manifests/infra/`, `manifests/obs/` |
+| Evidencia visual y sustentación | Capturas en `images/`; el video de sustentación se entrega como enlace externo de máximo 10 minutos | `images/`, sección de evidencias de Airflow, Argo CD, Streamlit, Grafana, Locust y MLflow |
 
 ---
 
@@ -69,7 +96,31 @@ Pipeline incremental de MLOps para predicción de precios de bienes raíces. El 
 
 ---
 
-## 2. Componentes
+## 2. Lectura de evidencias
+
+Las capturas del README están organizadas para seguir el proceso completo del
+proyecto, desde la construcción de imágenes hasta la operación observable del
+modelo en producción.
+
+| Orden | Etapa del proceso | Evidencia visual |
+|---|---|---|
+| 1 | **CI/CD:** GitHub Actions construye y publica la imagen, y actualiza el manifiesto cuando aplica | [Ejecución de workflow](images/ejemplo_ejecucion_workflow_github_actions.png) |
+| 2 | **GitOps:** Argo CD sincroniza namespaces, infraestructura, app, observabilidad y Airflow desde Git | [Apps sincronizadas](images/dashboard_argo_con_apps_syncronizadas.png), [detalle de app](images/ejemplo_general_app_argo.png) |
+| 3 | **Pipeline incremental:** Airflow consume un lote, valida, detecta drift, preprocesa y decide si entrena | [Vista del DAG](images/vista_general_ejecuciones_dag.png) |
+| 4 | **Decisión técnica:** el DAG registra casos de entrenamiento, promoción/rechazo y omisión de entrenamiento | [Promoción/rechazo](images/Ejemplo_reject_promote_model.png), [skip training](images/Ejemplo_skip_trainning.png) |
+| 5 | **Tracking y registry:** MLflow conserva runs, métricas, parámetros, artefactos y modelos registrados | [Runs MLflow](images/dashboard_experimentos_general_mlflow.png), [artefactos](images/ejemplo_graficas_artifacts_experimentos_mlflow.png) |
+| 6 | **Inferencia:** Streamlit consume FastAPI y muestra el modelo productivo cargado desde MLflow | [Formulario](images/frontend_general.png), [predicción](images/Ejemplo_prediccion_frontend.png) |
+| 7 | **Historial:** Streamlit expone el resultado de cada lote procesado por Airflow | [Historial actualizado](images/frontend_historial_entrenamiento_con_refresh.png) |
+| 8 | **Observabilidad y carga:** Locust genera tráfico y Grafana muestra RPS, latencia y errores de la API | [Locust](images/pruebas_carga_locust.png), [Grafana bajo carga](images/dashboard_grafana_durante_pruebas_locust.png) |
+
+La evidencia de separación RAW/CLEAN y el registro de inferencias se explica en
+detalle en [Airflow/README.md](Airflow/README.md) y [api/README.md](api/README.md)
+porque corresponde principalmente a tablas y lógica de persistencia. Las tablas
+clave son `property_raw`, `property_clean`, `batch_audit` e `inference_logs`.
+
+---
+
+## 3. Componentes
 
 ### API de datos (`api-source`)
 Servicio externo que provee los datos de propiedades inmobiliarias en lotes secuenciales. El DAG consulta `GET /data?group_number=7` para obtener cada batch. Corre en el namespace `mlops-infra` junto a la infraestructura base.
@@ -80,8 +131,6 @@ Servicio externo que provee los datos de propiedades inmobiliarias en lotes secu
 Orquesta el ciclo completo de MLOps: ingesta → validación → drift → preprocesamiento → decisión de entrenamiento → entrenamiento → evaluación → comparación → promoción → recarga de API. El DAG corre cada 2 minutos con `max_active_runs=1` para evitar solapamientos.
 
 > Ver documentación detallada: [Airflow/README.md](Airflow/README.md)
-
-![Vista general de ejecuciones del DAG](images/vista_general_ejecuciones_dag.png)
 
 ---
 
@@ -130,7 +179,7 @@ Almacenamiento de objetos compatible con S3. Guarda los artefactos de MLflow (mo
 
 ---
 
-## 3. Estructura del proyecto
+## 4. Estructura del proyecto
 
 ```
 Proyecto_3/
@@ -198,7 +247,7 @@ Proyecto_3/
 
 ---
 
-## 4. Prerrequisitos
+## 5. Prerrequisitos
 
 **Local (Docker Compose):**
 - Docker Desktop ≥ 4.x con al menos 6 GB de RAM asignados
@@ -215,7 +264,7 @@ Proyecto_3/
 
 ---
 
-## 5. Despliegue local — Docker Compose
+## 6. Despliegue local — Docker Compose
 
 ### Levantar el stack completo
 
@@ -227,21 +276,20 @@ docker compose up -d --build
 
 ```bash
 # Solo infraestructura
-docker compose -f compose/postgres-dataset.yml -f compose/minio.yml -f compose/mlflow.yml up -d
+docker compose up -d --build postgres-dataset minio mlflow api-source
 
 # API de inferencia
-docker compose -f compose/api.yml up -d --build
+docker compose up -d --build api
 
 # Observabilidad
-docker compose -f compose/prometheus.yml -f compose/grafana.yml up -d --build
+docker compose up -d --build prometheus grafana locust
 ```
 
 ### Variables de entorno requeridas (`.env` en `Proyecto_3/`)
 
 ```env
 AIRFLOW_UID=50000
-GF_ADMIN_USER=admin
-GF_ADMIN_PASSWORD=admin
+AIRFLOW_PROJ_DIR=../Airflow
 ```
 
 ### Servicios disponibles
@@ -249,17 +297,17 @@ GF_ADMIN_PASSWORD=admin
 | Servicio | URL | Credenciales |
 |---|---|---|
 | Airflow | http://localhost:8080 | airflow / airflow |
-| MLflow | http://localhost:5000 | — |
+| MLflow | http://localhost:5001 | — |
 | API docs | http://localhost:8000/docs | — |
 | Streamlit | http://localhost:8501 | — |
 | Locust | http://localhost:8089 | — |
 | Prometheus | http://localhost:9090 | — |
 | Grafana | http://localhost:3000 | admin / admin |
-| MinIO UI | http://localhost:9001 | minioadmin / minioadmin |
+| MinIO UI | http://localhost:19001 | minioadmin / minioadmin |
 
 ---
 
-## 6. Despliegue en Kubernetes
+## 7. Despliegue en Kubernetes
 
 Los manifiestos están organizados en **4 namespaces** para aislar responsabilidades:
 
@@ -276,10 +324,13 @@ El mecanismo principal de despliegue es **Argo CD**. Un único comando instala A
 
 ```bash
 cd Proyecto_3
-make deploy            # argocd-install + argocd-bootstrap + argocd-wait
-make deploy-airflow    # Helm chart de Airflow (fuera de Argo)
-make forward           # Port-forwards a localhost
+make deploy      # argocd-install + argocd-bootstrap + argocd-wait
+make forward     # Port-forwards a localhost
 ```
+
+`make deploy` sincroniza tambien Airflow mediante la `Application` `mlops-airflow`
+de Argo CD (wave 3). `make deploy-airflow` queda como target imperativo para el
+flujo de respaldo sin Argo.
 
 ### Despliegue por etapas (sin Argo — backup)
 
@@ -326,9 +377,9 @@ make delete              # Elimina todos los namespaces (destruye todo)
 
 ---
 
-## 7. GitOps — Argo CD
+## 8. GitOps — Argo CD
 
-El flujo GitOps con Argo CD es el **mecanismo principal de despliegue**. Cualquier cambio en los manifiestos de Git (incluyendo nuevas etiquetas de imagen generadas por CI/CD) se sincroniza automáticamente con el clúster.
+El flujo GitOps con Argo CD es el **mecanismo principal de despliegue**. Cualquier cambio en los manifiestos de Git se sincroniza automáticamente con el clúster. En la implementación actual, los workflows de API y Streamlit hacen write-back de tags `sha-*` a sus manifiestos; Airflow, MLflow y observabilidad publican imágenes y mantienen los manifiestos apuntando a `dev` salvo que se actualicen manualmente.
 
 ### Patrón App-of-Apps
 
@@ -371,8 +422,12 @@ Todas las `Application`s tienen `prune` y `selfHeal` activados:
 ```bash
 make argocd-install       # Instala Argo CD en el namespace argocd (--server-side)
 make argocd-bootstrap     # Aplica project.yaml + root-app.yaml → Argo sincroniza todo
-make deploy-airflow       # Airflow vía Helm (iniciado por la Application wave-3)
+make argocd-wait          # Espera a namespaces, infra, app, obs y airflow
 ```
+
+Airflow se instala por Argo CD con la `Application` `mlops-airflow` y el chart
+oficial de Apache Airflow. No es necesario ejecutar `make deploy-airflow` en el
+flujo GitOps.
 
 ### Comandos de Argo CD
 
@@ -428,7 +483,7 @@ make full-mode
 
 ---
 
-## 8. CI/CD — GitHub Actions
+## 9. CI/CD — GitHub Actions
 
 Cinco workflows en `.github/workflows/` construyen y publican imágenes multi-arquitectura (`linux/amd64` + `linux/arm64`) en DockerHub.
 
@@ -438,7 +493,7 @@ Cinco workflows en `.github/workflows/` construyen y publican imágenes multi-ar
 | `build-streamlit.yml` | Cambios en `Proyecto_3/streamlit/**` | `mlops-streamlit` |
 | `build-airflow.yml` | Cambios en `Proyecto_3/Airflow/**` | `mlops-airflow` + `mlops-airflow-compose` |
 | `build-mlflow.yml` | Cambios en `Proyecto_3/mlflow/**` | `mlops-mlflow` |
-| `build-observability.yml` | Cambios en `prometheus/`, `grafana/`, `locust/` | `mlops-prometheus`, `mlops-grafana`, `mlops-locust` |
+| `build-observability.yml` | Cambios en `Proyecto_3/prometheus/**`, `Proyecto_3/grafana/**`, `Proyecto_3/locust/**` | `mlops-prometheus`, `mlops-grafana`, `mlops-locust` |
 
 **Estrategia de tags:**
 - Cualquier push: `sha-<7chars>` (trazabilidad exacta al commit)
@@ -453,11 +508,11 @@ DOCKERHUB_USERNAME
 DOCKERHUB_TOKEN    ← access token (no la contraseña)
 ```
 
-**Flujo CI/CD → GitOps:** al publicar una nueva imagen con tag `sha-*` o `dev`, los manifiestos de Kubernetes se actualizan con la nueva etiqueta. Argo CD detecta el cambio en Git y sincroniza automáticamente el clúster.
+**Flujo CI/CD → GitOps:** `build-api.yml` y `build-streamlit.yml` actualizan sus manifests con el tag inmutable `sha-*` después de publicar la imagen. Argo CD detecta ese commit de write-back y sincroniza el clúster. Los workflows de Airflow, MLflow y observabilidad publican `sha-*`/`dev`, pero no modifican manifests en esta versión.
 
 ![Ejecución de workflow de GitHub Actions](images/ejemplo_ejecucion_workflow_github_actions.png)
 
-## 9. Flujo del pipeline MLOps
+## 10. Flujo del pipeline MLOps
 
 El DAG `real_estate_mlops` ejecuta el siguiente pipeline de forma incremental cada 2 minutos:
 
@@ -516,7 +571,7 @@ Ejemplo de una ejecución donde el DAG decide **omitir el entrenamiento** porque
 
 ---
 
-## 10. Interfaz web — Streamlit
+## 11. Interfaz web — Streamlit
 
 La interfaz Streamlit (`localhost:8501`) tiene dos secciones principales:
 
@@ -546,7 +601,7 @@ Historial de entrenamiento después de refrescar — muestra los lotes más reci
 
 ---
 
-## 11. Observabilidad — Grafana & Prometheus
+## 12. Observabilidad — Grafana & Prometheus
 
 Prometheus hace scraping de las métricas expuestas por la API (`GET /metrics`) cada 15 segundos. Grafana las visualiza en un dashboard preconfigurado que incluye:
 
@@ -554,6 +609,10 @@ Prometheus hace scraping de las métricas expuestas por la API (`GET /metrics`) 
 - **Latencia:** percentiles p50, p95 y p99 de tiempo de respuesta.
 - **Tasa de error:** proporción de respuestas 4xx/5xx.
 - **Predicciones totales:** contador de inferencias realizadas.
+
+La versión y estado del modelo cargado se exponen en `GET /model-info` y
+también se muestran en Streamlit; el dashboard versionado de Grafana se enfoca
+en las métricas HTTP recolectadas por Prometheus.
 
 Los dashboards de Grafana están **baked into la imagen Docker** (`bravosjs/mlops-grafana:dev`), por lo que arrancan preconfigurados sin intervención manual.
 
@@ -569,7 +628,7 @@ Dashboard de Grafana durante una sesión de pruebas de carga con Locust (se pued
 
 ---
 
-## 12. Pruebas de carga — Locust
+## 13. Pruebas de carga — Locust
 
 Locust (`localhost:8089`) permite simular múltiples usuarios concurrentes haciendo peticiones a `POST /predict`. Se utiliza para:
 
@@ -587,7 +646,7 @@ Resultados de una sesión de pruebas de carga en la UI de Locust:
 
 ---
 
-## 13. MLflow — Tracking y Registry
+## 14. MLflow — Tracking y Registry
 
 MLflow cumple dos roles en el sistema:
 
@@ -601,9 +660,10 @@ Vista general del panel de experimentos de MLflow con el historial de runs:
 
 ![Dashboard general de experimentos MLflow](images/dashboard_experimentos_general_mlflow.png)
 
-Ejemplo de métricas y tags registrados en un experimento individual:
-
-![Métricas y tags de un experimento](images/ejemplo_metricas_y_tags_experimento_mlflow.png)
+Cada run registra métricas de entrenamiento, validación y prueba, parámetros del
+modelo y tags de trazabilidad como `batch_id`, `training_batches`,
+`model_type`, `primary_metric`, `preprocessor_version` y `git_commit`. El detalle
+de estos campos está documentado en [Airflow/README.md](Airflow/README.md).
 
 Visualización de gráficas y artefactos de un experimento:
 
@@ -611,7 +671,7 @@ Visualización de gráficas y artefactos de un experimento:
 
 ---
 
-## 14. Gestión de recursos en Kubernetes
+## 15. Gestión de recursos en Kubernetes
 
 En entornos con recursos limitados (Docker Desktop con 8–12 GB de RAM), el stack completo puede consumir demasiada memoria durante los ciclos intensivos del DAG. Para mitigarlo existe un par de targets en el `Makefile`:
 

@@ -1,5 +1,5 @@
-# API de datos (Covertype) para pruebas locales.
-# Sirve datos por batches; el DAG de Airflow se conecta a este servicio como api-data.
+# API de inferencia FastAPI para predicción de precios inmobiliarios.
+# El DAG llama a este servicio para recargar el modelo productivo tras una promoción.
 
 services:
   api:

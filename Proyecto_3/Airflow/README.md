@@ -951,14 +951,16 @@ El campo `row_hash` en `property_raw` permite detectar registros exactamente id�
 | `MLFLOW_REGISTERED_MODEL` | `real-estate-price-model` | Nombre del modelo en el registry |
 | `MLFLOW_EXPERIMENT` | `real-estate-price` | Nombre del experimento MLflow |
 | `MINIO_BUCKET` | `real-estate-project` | Bucket de artefactos en MinIO |
-| `MINIO_ENDPOINT_URL` | — | URL del servidor MinIO |
-| `MINIO_ACCESS_KEY` | — | Credencial MinIO |
-| `MINIO_SECRET_KEY` | — | Credencial MinIO |
-| `DB_HOST` | — | Host de PostgreSQL (RAW/CLEAN data) |
-| `DB_PORT` | `5432` | Puerto PostgreSQL |
-| `DB_NAME` | — | Nombre de la base de datos |
-| `DB_USER` | — | Usuario PostgreSQL |
-| `DB_PASSWORD` | — | Contraseña PostgreSQL |
+| `MINIO_ENDPOINT` | `http://minio:9000` | URL del servidor MinIO para `boto3` |
+| `MLFLOW_S3_ENDPOINT_URL` | `http://minio:9000` | URL S3 usada por MLflow para descargar/subir artefactos |
+| `AWS_ACCESS_KEY_ID` | `minioadmin` | Credencial MinIO compatible con S3 |
+| `AWS_SECRET_ACCESS_KEY` | `minioadmin` | Credencial MinIO compatible con S3 |
+| `AWS_DEFAULT_REGION` | `us-east-1` | Region S3 usada por clientes AWS |
+| `POSTGRES_DATASET_HOST` | `postgres-dataset` | Host de PostgreSQL (RAW/CLEAN data) |
+| `POSTGRES_DATASET_PORT` | `5432` | Puerto PostgreSQL |
+| `POSTGRES_DATASET_DATABASE` | `real_estate_data` | Nombre de la base de datos |
+| `POSTGRES_DATASET_USER` | `airflow` | Usuario PostgreSQL |
+| `POSTGRES_DATASET_PASSWORD` | `airflow` | Contrasena PostgreSQL |
 | `INFERENCE_API_URL` | `http://api:8000` | URL base de la API de inferencia para el reload |
 | `PROMOTION_MAE_IMPROVEMENT` | `0.03` | Mejora mínima de MAE para promover (fracción) |
 | `PROMOTION_RMSE_TOLERANCE` | `0.01` | Tolerancia máxima de empeoramiento de RMSE |
@@ -982,28 +984,16 @@ La función `_get_git_commit()` en `utils/training.py` sigue este orden de prior
 3. Fallback                                    → registra "unknown"
 ```
 
-En el contenedor de Airflow **git no está instalado**, por lo que la variable de entorno es el mecanismo principal.
+En el contenedor de Airflow puede no existir `git`, por lo que la variable de
+entorno `GIT_COMMIT` es el mecanismo más confiable para registrar trazabilidad.
+En la implementación actual, `build-airflow.yml` construye y publica las
+imágenes `mlops-airflow` y `mlops-airflow-compose`, pero no inyecta
+`GIT_COMMIT` como build arg ni hace write-back del SHA al manifest.
 
-#### Configuración en GitHub Actions
-
-**En el workflow de GitHub Actions** (`.github/workflows/build.yml`):
-```yaml
-- name: Build and push Airflow image
-  uses: docker/build-push-action@v5
-  with:
-    context: ./Proyecto_3/Airflow
-    push: true
-    tags: ${{ secrets.DOCKERHUB_USERNAME }}/mlops-airflow:${{ github.sha }}
-    build-args: |
-      GIT_COMMIT=${{ github.sha }}
-```
-
-**En el manifiesto de Kubernetes** (Deployment de Airflow worker/scheduler):
-```yaml
-env:
-  - name: GIT_COMMIT
-    value: "${{ github.sha }}"
-```
+Para Kubernetes, `manifests/airflow-helm-values/values-local.yaml` define las
+variables operativas del DAG. Si se requiere trazabilidad exacta del commit en
+MLflow, agregar allí `GIT_COMMIT` con el SHA deseado antes de desplegar o
+publicar una nueva imagen.
 
 #### Configuración en Docker Compose (desarrollo local)
 

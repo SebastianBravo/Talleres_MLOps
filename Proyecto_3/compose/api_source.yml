@@ -1,5 +1,5 @@
-# API de datos (Covertype) para pruebas locales.
-# Sirve datos por batches; el DAG de Airflow se conecta a este servicio como api-data.
+# API externa de datos inmobiliarios para pruebas locales.
+# Sirve datos por batches; el DAG de Airflow se conecta como api-source:80.
 
 services:
   api-source:

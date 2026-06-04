@@ -1,5 +1,5 @@
 # Airflow: orquestador (webserver, scheduler, worker, triggerer, init).
-# Depende de: postgres, redis, mysql_db, minio (definidos en compose/postgres.yml, redis.yml, mysql.yml, minio.yml).
+# Depende de: postgres, postgres-dataset, minio, mlflow, api-source y api.
 
 x-airflow-common:
   &airflow-common
