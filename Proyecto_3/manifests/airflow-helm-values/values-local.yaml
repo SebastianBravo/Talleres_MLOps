@@ -47,6 +47,11 @@ env:
   - name: GIT_PYTHON_REFRESH
     value: quiet
 
+# Clave compartida por webserver, scheduler, workers y triggerer para firmar
+# tokens de log. Sin esta clave fija cada pod genera una aleatoria y el
+# webserver recibe 403 al intentar leer los logs del scheduler.
+webserverSecretKey: "mlops-puj-local-secret-key-2026"
+
 migrateDatabaseJob:
   enabled: true
   useHelmHooks: false
