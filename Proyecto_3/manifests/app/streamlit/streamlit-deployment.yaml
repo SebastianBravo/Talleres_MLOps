@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: streamlit
-          image: bravosjs/mlops-streamlit:sha-32e6d01
+          image: bravosjs/mlops-streamlit:sha-4b4d9c5
           imagePullPolicy: Always
           ports:
             - containerPort: 8501
